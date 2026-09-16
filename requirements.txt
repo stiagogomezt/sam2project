@@ -1,4 +1,7 @@
-# Nota: El usuario debe instalar torch y torchvision en versión CPU manualmente antes de instalar esto.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2.0
+torchvision
+git+https://github.com/facebookresearch/sam2.git
 streamlit
 streamlit-folium
 rasterio
@@ -7,3 +10,6 @@ shapely
 folium
 mercantile
 requests
+click
+pydantic
+pyyaml

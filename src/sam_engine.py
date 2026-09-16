@@ -8,8 +8,14 @@ import urllib.request
 from typing import Tuple, Dict, Any, Optional
 import numpy as np
 import streamlit as st
-import torch
 from config import SAM2_MODELS, DEFAULT_SAM2_MODEL_KEY
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 
 try:
     from sam2.build_sam import build_sam2
@@ -19,12 +25,22 @@ except ImportError:
     SAM2ImagePredictor = None
 
 class SAM2Engine:
-    """Clase envolvente para el predictor de SAM 2."""
+    """Clase envolvente para el predictor de SAM 2 con soporte resiliente de fallback."""
     
     def __init__(self, model_key: str = DEFAULT_SAM2_MODEL_KEY):
-        if build_sam2 is None or SAM2ImagePredictor is None:
-            raise ImportError("El paquete 'sam2' no está instalado en el entorno.")
-            
+        if not TORCH_AVAILABLE or build_sam2 is None or SAM2ImagePredictor is None:
+            # Fallback seguro cuando torch o sam2 no están disponibles (ej. despliegues iniciales en la nube)
+            self.is_mock = True
+            self.device = "cpu"
+            self.device_name = "CPU (Modo Fallback / Simulado)"
+            self.predictor = None
+            self.current_image_id = None
+            from geosam.backends.mock import MockBackend
+            self.mock_backend = MockBackend(model_id="mock_fallback")
+            self.mock_backend.load("cpu")
+            return
+
+        self.is_mock = False
         if model_key not in SAM2_MODELS:
             model_key = DEFAULT_SAM2_MODEL_KEY
             
@@ -47,7 +63,7 @@ class SAM2Engine:
         print(f"Cargando SAM 2 ({model_key}) en {self.device}...")
         sam2_model = build_sam2(config_path, checkpoint_path, device=self.device)
         self.predictor = SAM2ImagePredictor(sam2_model)
-        self.current_image_id: Optional[str] = None
+        self.current_image_id = None
         print(f"SAM 2 inicializado exitosamente en {self.device_name}.")
         
     def set_image(self, image_array: np.ndarray, image_id: Optional[str] = None) -> float:
@@ -56,6 +72,11 @@ class SAM2Engine:
         Devuelve el tiempo transcurrido en segundos.
         """
         start_time = time.time()
+        if getattr(self, "is_mock", False):
+            self.mock_emb = self.mock_backend.embed(image_array)
+            self.current_image_id = image_id
+            return time.time() - start_time
+
         self.predictor.set_image(image_array)
         self.current_image_id = image_id
         elapsed = time.time() - start_time
@@ -79,17 +100,41 @@ class SAM2Engine:
                 - 'inference_time': Tiempo en segundos.
                 - 'device': Dispositivo utilizado.
         """
+        start_time = time.time()
+
+        if getattr(self, "is_mock", False):
+            candidates = self.mock_backend.predict_points(
+                self.mock_emb,
+                np.array([[col, row]]),
+                np.array([1]),
+                multimask=multimask_output,
+            )
+            best_c = candidates[0]
+            all_masks = np.stack([c.mask for c in candidates])
+            scores = [float(c.score) for c in candidates]
+            elapsed = time.time() - start_time
+            return {
+                "best_mask": best_c.mask,
+                "all_masks": all_masks,
+                "scores": scores,
+                "best_score": float(best_c.score),
+                "best_idx": 0,
+                "inference_time": elapsed,
+                "device": self.device_name,
+                "clicked_point": (col, row),
+            }
+
         if self.predictor is None:
             raise RuntimeError("El predictor de SAM 2 no está inicializado.")
             
-        start_time = time.time()
-        
         point_coords = np.array([[col, row]], dtype=np.float32)
         point_labels = np.array([1], dtype=np.int32) # 1 = Foreground
         
         masks, scores, logits = self.predictor.predict(
             point_coords=point_coords,
             point_labels=point_labels,
+            box=None,
+            mask_input=None,
             multimask_output=multimask_output,
         )
         
