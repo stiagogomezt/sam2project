@@ -1,0 +1,41 @@
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv/
+
+# Modelos pesados de SAM 2 (exceden el límite de 100MB de GitHub)
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Cache de Python y compilados
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Streamlit
+.streamlit/
+
+# Archivos temporales de datos y resultados geoespaciales
+*.tif
+*.tiff
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip
+
+# Logs y diagnósticos
+*.log
+test_app.py
+
+# IDE y sistema operativo
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,9 @@
+# Nota: El usuario debe instalar torch y torchvision en versión CPU manualmente antes de instalar esto.
+streamlit
+streamlit-folium
+rasterio
+geopandas
+shapely
+folium
+mercantile
+requests
