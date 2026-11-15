@@ -31,6 +31,11 @@ PALETTE = ["#00E5FF", "#FF4081", "#76FF03", "#FFAB00", "#D500F9", "#1DE9B6",
            "#FF6E40", "#2979FF", "#EEFF41", "#F50057", "#00B0FF", "#64DD17"]
 
 
+def _touches_edge(mask: np.ndarray) -> bool:
+    from src.postprocess import touches_border
+    return touches_border(mask)
+
+
 def new_object_id() -> str:
     return f"OBJ-{uuid.uuid4().hex[:8].upper()}"
 
@@ -52,6 +57,8 @@ class GeoObject:
     prompts: Optional[Dict[str, Any]] = None
     color: str = PALETTE[0]
     raster_value: int = 1
+    label_source: str = "usuario"   # "usuario" o "RemoteCLIP (confirmada por el usuario)"
+    touches_edge: bool = False      # la máscara toca el borde de la ortofoto (posible recorte)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
@@ -67,7 +74,8 @@ class GeoObject:
         row = self.gdf.iloc[0].drop(labels=["geometry"]).to_dict()
         row.update({"object_id": self.object_id, "label": self.label, "status": self.status,
                     "origin": self.origin, "model_id": self.model_id, "backend": self.backend,
-                    "version": self.version, "raster_value": self.raster_value})
+                    "version": self.version, "raster_value": self.raster_value,
+                    "label_source": self.label_source, "touches_edge": self.touches_edge})
         return row
 
 
@@ -108,6 +116,7 @@ class ObjectCatalog:
         status: str = "aceptado",
         prompts: Optional[Dict[str, Any]] = None,
         object_id: Optional[str] = None,
+        label_source: str = "usuario",
     ) -> GeoObject:
         if gdf is None or gdf.empty:
             raise ValueError("La máscara no generó ningún polígono válido.")
@@ -126,7 +135,7 @@ class ObjectCatalog:
             object_id=oid, label=label, gdf=g, mask_rle=mask_to_rle(m), bbox_px=bbox,
             pred_iou=float(pred_iou), model_id=model_id, backend=backend, origin=origin,
             status=status, prompts=prompts, color=PALETTE[(self._next_value - 1) % len(PALETTE)],
-            raster_value=self._next_value,
+            raster_value=self._next_value, label_source=label_source, touches_edge=_touches_edge(m),
         )
         self._next_value += 1
         self._objects[oid] = obj
@@ -151,6 +160,7 @@ class ObjectCatalog:
         obj.prompts = prompts
         obj.model_id = model_id
         obj.backend = backend
+        obj.touches_edge = _touches_edge(m)
         obj.version += 1
         obj.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._touch()
@@ -162,7 +172,7 @@ class ObjectCatalog:
         for k, v in fields.items():
             if k == "status" and v not in STATUSES:
                 raise ValueError(f"Estado inválido: {v}")
-            if k not in ("label", "status", "visible"):
+            if k not in ("label", "status", "visible", "label_source"):
                 raise KeyError(f"Campo no editable: {k}")
             if getattr(obj, k) != v:
                 setattr(obj, k, v)
@@ -172,6 +182,33 @@ class ObjectCatalog:
         if changed:
             obj.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._touch()
+
+    def merge(self, object_ids: List[str], gdf_builder, label: Optional[str] = None, postprocess=None) -> GeoObject:
+        """Fusiona varios objetos (p. ej. nave + claustro + alas de un convento) en uno nuevo.
+
+        `gdf_builder(mask) -> GeoDataFrame` recalcula geometría y métricas sobre la máscara unida.
+        Los objetos de origen se eliminan; el resultado conserva el modelo del primero.
+        """
+        if len(object_ids) < 2:
+            raise ValueError("Seleccione al menos dos objetos para fusionar.")
+        objs = [self._objects[i] for i in object_ids]
+        merged = np.zeros_like(objs[0].mask())
+        for o in objs:
+            merged |= o.mask()
+        if postprocess is not None:
+            merged = postprocess(merged)
+        gdf = gdf_builder(merged)
+        if gdf is None or gdf.empty:
+            raise ValueError("La fusión no produjo un polígono válido.")
+        first = objs[0]
+        pred_iou = min(o.pred_iou for o in objs)
+        for oid in object_ids:
+            del self._objects[oid]
+        new = self.add_from_mask(merged, gdf, pred_iou, first.model_id, first.backend,
+                                 label=label or first.label, origin="fusión", status="aceptado",
+                                 object_id=new_object_id(), label_source=first.label_source)
+        new.prompts = {"merged_from": list(object_ids)}
+        return new
 
     def remove(self, object_id: str) -> None:
         del self._objects[object_id]

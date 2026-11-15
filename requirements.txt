@@ -2,6 +2,8 @@
 torch>=2.2.0
 torchvision
 git+https://github.com/facebookresearch/sam2.git
+# Clasificación semántica complementaria (sugerencias zero-shot con RemoteCLIP); opcional en tiempo de ejecución
+open_clip_torch>=2.24
 # >=1.67: segmented_control, width="stretch", descargas diferidas (data callable) y on_click="ignore"
 streamlit>=1.67,<2
 # >=0.27: feature_group_to_add (capas dinámicas sin re-renderizar el mapa)

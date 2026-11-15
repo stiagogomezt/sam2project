@@ -25,7 +25,7 @@ if os.environ.get("RUN_E2E") != "1":
 playwright = pytest.importorskip("playwright.sync_api")
 
 ROOT = Path(__file__).resolve().parents[2]
-LABEL = "Etiqueta (asignada por usted; SAM 2 no clasifica)"
+LABEL = "Categoría (la asigna usted; SAM 2 no clasifica)"
 
 
 def _free_port() -> int:
@@ -110,9 +110,18 @@ def load_orthophoto(browser, url):
     return page
 
 
+def set_category(page, label):
+    """Selectbox con accept_new_options: escribir y confirmar con Enter."""
+    box = page.locator("[data-testid='stSelectbox']").filter(has_text=LABEL).first
+    box.click()
+    page.keyboard.type(label)
+    page.keyboard.press("Enter")
+    wait_idle(page)
+
+
 def accept(page, label=None):
     if label:
-        page.get_by_label(LABEL).fill(label)
+        set_category(page, label)
     page.get_by_role("button", name="✅ Aceptar objeto").click()
     wait_idle(page); page.wait_for_timeout(1000)
     no_exceptions(page)
@@ -230,4 +239,43 @@ def test_model_switch_and_automatic(browser, app_url):
     no_exceptions(page)
     n = int(page.get_by_role("tab").first.inner_text().split("(")[1].rstrip(")"))
     assert n > 0
+    page.close()
+
+
+def test_composite_building_shape_and_category(browser, app_url):
+    """Caja + puntos sobre una edificación compuesta, patios rellenados y categoría sugerida."""
+    page = load_orthophoto(browser, app_url)
+    page.locator("button", has_text="Caja (2 clics)").first.click(); wait_idle(page)
+    click_map(page, -160, -140); click_map(page, 40, 20)
+    page.locator("button", has_text="Incluir").first.click(); wait_idle(page)
+    click_map(page, -60, -60)
+    page.wait_for_selector("text=Perímetro exterior", timeout=60000)
+    cb = page.get_by_role("checkbox", name="Rellenar patios y huecos interiores")
+    if not cb.is_visible():
+        page.get_by_text("Forma de la huella").click(); wait_idle(page)
+    cb.check(force=True); wait_idle(page)
+    no_exceptions(page)
+    # el rerun que provoca la casilla puede tardar: esperar a que desaparezcan los huecos
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        body = page.inner_text("body")
+        if "0 hueco(s)" in body or "hueco(s)" not in body:
+            break
+        page.wait_for_timeout(500)
+    assert "0 hueco(s)" in body or "hueco(s)" not in body
+    btn = page.get_by_role("button", name="✨ Sugerir categoría (RemoteCLIP)")
+    if btn.is_enabled():
+        btn.click(); wait_idle(page, 300)
+        no_exceptions(page)
+        sug = page.locator("button", has_text="%")
+        if sug.count():
+            first = sug.first.inner_text().split(" · ")[0]
+            sug.first.click(); wait_idle(page)
+            accept(page)
+            page.get_by_role("tab", name="Detalle y métricas").click(); wait_idle(page)
+            body = page.inner_text("body")
+            assert first in body and "RemoteCLIP (confirmada por el usuario)" in body
+            page.close()
+            return
+    accept(page, "Edificación religiosa")
     page.close()

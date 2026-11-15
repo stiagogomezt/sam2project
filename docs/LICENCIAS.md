@@ -51,3 +51,11 @@ En cumplimiento con la **Regla de Trabajo 7 (§0)** y la Sección 5.4 de la espe
 ### Esri World Imagery (teselas de la ortofoto)
 - **Proveedor:** Esri (ArcGIS Online, servicio `World_Imagery/MapServer`).
 - **Uso:** sujeto a los términos de uso de Esri. La atribución se muestra en el mapa. Antes de usar o redistribuir derivados (GeoTIFF, datasets) fuera del ámbito académico, verifique las condiciones vigentes del servicio.
+
+### RemoteCLIP (sugerencias de categoría)
+- **Repositorio:** `ChenDelong1999/RemoteCLIP` — código bajo Apache License 2.0.
+- **Pesos:** `chendelong/RemoteCLIP` en Hugging Face; el repositorio de pesos no declara licencia
+  propia (hay una consulta abierta al respecto en el repositorio oficial). Uso académico; verifique
+  la licencia antes de un uso comercial.
+- **Atribución:** Liu, Chen et al., "RemoteCLIP: A Vision Language Foundation Model for Remote
+  Sensing", IEEE TGRS, 2024.

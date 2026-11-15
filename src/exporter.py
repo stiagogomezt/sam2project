@@ -74,7 +74,7 @@ def export_geotiff(
 # (centroid_lat → centroid_l, centroid_lon → centroid_1).
 SHAPEFILE_FIELD_MAP = {
     "object_id": "obj_id", "label": "label", "status": "status", "pred_iou": "pred_iou",
-    "area_m2": "area_m2", "perimeter_m": "perim_m", "area_geod_m2": "area_geod",
+    "area_m2": "area_m2", "perimeter_m": "perim_m", "perimeter_ext_m": "perim_ext", "area_geod_m2": "area_geod",
     "perimeter_geod_m": "perim_geod", "pixel_area_m2": "px_area_m2",
     "pixel_count": "px_count", "hull_area_m2": "hull_m2", "solidity": "solidity",
     "compactness": "compact", "rectangularity": "rectang", "elongation": "elong",
@@ -84,7 +84,7 @@ SHAPEFILE_FIELD_MAP = {
     "min_lat": "min_lat", "max_lon": "max_lon", "max_lat": "max_lat",
     "metric_crs": "metric_crs", "gsd_m": "gsd_m", "timestamp": "timestamp",
     "model_id": "model_id", "backend": "backend", "origin": "origin", "version": "version",
-    "raster_value": "rast_val", "nn_id": "nn_id", "nn_dist_m": "nn_dist_m", "n_contacts": "n_contact",
+    "raster_value": "rast_val", "label_source": "label_src", "touches_edge": "edge_cut", "nn_id": "nn_id", "nn_dist_m": "nn_dist_m", "n_contacts": "n_contact",
 }
 
 

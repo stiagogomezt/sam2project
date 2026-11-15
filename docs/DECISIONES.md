@@ -64,3 +64,28 @@
 - **Fecha:** 2026-11-15
 - **Estado:** Aceptado
 - **Decisión:** SAM 2 es agnóstico de clase. La etiqueta de cada objeto la escribe el usuario y se exporta como categoría COCO. El score se expone como `pred_iou`. Cualquier clasificación automática futura será un componente separado y documentado.
+
+## DEC-0009: Clasificación complementaria como sugerencia (RemoteCLIP zero-shot)
+- **Fecha:** 2026-11-15
+- **Estado:** Aceptado
+- **Contexto:** El usuario necesita categorizar objetos (p. ej. "Edificación religiosa"). SAM 2 no
+  clasifica (DEC-0008).
+- **Decisión:** Un componente separado (`src/semantic.py`) usa RemoteCLIP ViT-B/32 en modo zero-shot
+  sobre el recorte del objeto. Devuelve las 3 categorías más probables, sumando varias descripciones
+  por categoría. El usuario confirma; la fuente queda registrada en `label_source`.
+- **Evidencia medida (Bogotá, Esri z19, 10 recortes):** primera opción correcta en ≈la mitad; correcta
+  entre las 3 primeras en 8 de 9 evaluables. Confusiones: techo azul ↔ agua, cancha ↔ césped.
+- **Coste:** pesos de 605 MB (descarga única), ≈80 ms por objeto en CPU y ≈+600 MB de RSS, casi todo
+  páginas del archivo mapeado (pesos con mmap + assign; la torre de texto se libera tras codificar
+  las descripciones).
+- **Alternativa futura:** un clasificador supervisado entrenado con el dataset COCO exportado.
+
+## DEC-0010: Huella de edificaciones compuestas
+- **Fecha:** 2026-11-15
+- **Estado:** Aceptado
+- **Contexto:** Un clic segmenta una parte homogénea (techo, patio). Las edificaciones compuestas
+  necesitan caja + puntos, y sus patios inflan el perímetro.
+- **Decisión:** Post-proceso opcional y explícito (rellenar huecos, cierre morfológico, parte
+  principal) aplicado a la máscara antes de vectorizar. Se reportan el perímetro exterior y el total.
+- **Evidencia:** convento completo con SAM 2.1 Large, caja + 5 puntos + patios rellenados → una sola
+  parte, IoU predicho 0,936, ≈15 300 m², perímetro exterior ≈700 m (en la app, E2E).

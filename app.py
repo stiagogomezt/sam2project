@@ -29,6 +29,9 @@ from src.sam_engine import get_sam2_engine
 from src.segmentation import coordinates_to_pixel, pixel_to_coordinates, extract_cutout, create_mask_overlay
 from src.geospatial import mask_to_geodataframe, derived_geometries, spatial_relations
 from src.interactive import InteractiveSegmenter
+from src.postprocess import refine_mask, touches_border
+from src.semantic import CATEGORIES, REMOTECLIP_INFO, SemanticClassifier, classifier_available, object_crop
+from src.sam_engine import ensure_checkpoint
 from src.objects import ObjectCatalog, STATUSES
 from src.visualization import create_base_map, build_dynamic_layers
 from src.exporter import (
@@ -80,7 +83,9 @@ _DEFAULTS = {
                    (DEFAULT_BBOX["min_lon"] + DEFAULT_BBOX["max_lon"]) / 2],
     "map_zoom": DEFAULT_ZOOM,
     "focus_object_id": None,
-    "label_default": "objeto",
+    "label_default": "Sin categoría",
+    "suggestions": None,        # (clave de candidata, [(categoría, prob), ...]) de RemoteCLIP
+    "suggested_pick": None,     # categoría sugerida que el usuario adoptó
     "cand_cache": None,
 }
 for _k, _v in _DEFAULTS.items():
@@ -99,6 +104,21 @@ def _reset_editing() -> None:
     st.session_state.seg = InteractiveSegmenter(refine_with_logits=st.session_state.seg.refine_with_logits)
     st.session_state.editing_object_id = None
     st.session_state.cand_cache = None
+    st.session_state.suggestions = None
+    st.session_state.suggested_pick = None
+
+
+@st.cache_resource(show_spinner=f"Cargando RemoteCLIP (≈{REMOTECLIP_INFO['size_mb']} MB la primera vez)...", max_entries=1)
+def get_semantic_classifier() -> SemanticClassifier:
+    ensure_checkpoint(REMOTECLIP_INFO)
+    return SemanticClassifier()
+
+
+def shape_options() -> dict:
+    """Opciones de forma de la huella (widgets del panel; se leen antes de dibujar el mapa)."""
+    return {"fill_holes": bool(st.session_state.get("shape_fill", False)),
+            "close_px": float(st.session_state.get("shape_close", 0)),
+            "keep_largest": bool(st.session_state.get("shape_largest", False))}
 
 
 # =============================================================================
@@ -241,19 +261,36 @@ if not mosaic_loaded:
 # =============================================================================
 # FUNCIONES AUXILIARES DE LA INTERFAZ
 # =============================================================================
-def candidate_gdf(idx: int | None = None):
-    """GeoDataFrame de la candidata (cacheado por estado de prompts y parámetros)."""
-    if seg.result is None:
-        return None
+def _cand_key(idx: int | None = None):
     idx = seg.selected_idx if idx is None else idx
-    key = (id(seg.result), idx, min_pixel_area, simplify_px)
+    so = shape_options()
+    return (id(seg.result), idx, min_pixel_area, simplify_px, so["fill_holes"], so["close_px"], so["keep_largest"])
+
+
+def candidate_mask_and_gdf(idx: int | None = None):
+    """(máscara post-procesada, GeoDataFrame) de la candidata, cacheados por prompts y parámetros."""
+    if seg.result is None:
+        return None, None
+    idx = seg.selected_idx if idx is None else idx
+    key = _cand_key(idx)
     cache = st.session_state.cand_cache or {}
     if key not in cache:
         cand = seg.candidates[idx]
-        cache[key] = mask_to_geodataframe(cand.mask, mosaic["transform_3857"], confidence=cand.score,
-                                          min_pixel_area=min_pixel_area, simplify_px=simplify_px)
+        mask = refine_mask(cand.mask, min_part_px=min_pixel_area, **shape_options())
+        gdf = mask_to_geodataframe(mask, mosaic["transform_3857"], confidence=cand.score,
+                                   min_pixel_area=min_pixel_area, simplify_px=simplify_px)
+        cache[key] = (mask, gdf)
         st.session_state.cand_cache = cache
     return cache[key]
+
+
+def candidate_gdf(idx: int | None = None):
+    return candidate_mask_and_gdf(idx)[1]
+
+
+def _pick_suggestion(cat: str, key: str) -> None:
+    st.session_state[key] = cat
+    st.session_state.suggested_pick = cat
 
 
 def _crop_box(masks, pad=12):
@@ -379,8 +416,8 @@ if mosaic_loaded and engine is not None and map_out and map_out.get("last_clicke
 with col_panel:
     if not mosaic_loaded:
         st.markdown("#### Flujo de trabajo")
-        st.markdown("1. Zona de estudio · 2. Ortofoto · 3. Clic sobre el objeto · 4. SAM 2 · "
-                    "5. Refinar · 6. Validar · 7. Objeto GIS · 8. Métricas · 9. Administrar · 10. Exportar")
+        st.markdown("Zona de estudio → Ortofoto → Clic sobre el objeto → SAM 2 → Refinar → Validar → "
+                    "Objeto GIS → Métricas → Administrar → Exportar")
     else:
         editing = st.session_state.editing_object_id
         if editing:
@@ -418,44 +455,97 @@ with col_panel:
                 if choice != seg.selected_idx:
                     seg.select(choice)
                     st.rerun()
+                st.caption("¿Solo tomó una parte del edificio? En edificaciones compuestas (iglesias, conventos, "
+                           "colegios) use **▭ Caja** alrededor de todo el conjunto y añada **➕** sobre las partes "
+                           "que falten.")
 
-            gdf_c = candidate_gdf()
+            mask_c, gdf_c = candidate_mask_and_gdf()
             cand = seg.selected_candidate
             if gdf_c is None or gdf_c.empty:
                 st.warning("La máscara elegida no produce polígonos con el área mínima configurada.")
             else:
                 r = gdf_c.iloc[0]
+                if touches_border(mask_c):
+                    st.warning("El objeto toca el borde de la ortofoto: probablemente está **recortado** y sus "
+                               "medidas quedarán incompletas. Amplíe la zona de estudio para incluirlo entero.")
                 m1, m2 = st.columns(2)
                 m1.metric("Área", f"{r['area_m2']:,.1f} m²")
-                m2.metric("Perímetro", f"{r['perimeter_m']:,.1f} m")
+                m2.metric("Perímetro exterior", f"{r['perimeter_ext_m']:,.1f} m",
+                          help="Contorno de la huella, sin bordes de patios ni huecos interiores.")
                 m3, m4 = st.columns(2)
                 m3.metric("IoU predicho", f"{cand.score:.3f}",
                           help="Estimación de SAM 2 de la calidad de la máscara (IoU esperado con el objeto "
                                "real). No es una probabilidad de clase.")
                 m4.metric("Inferencia", f"{seg.result['inference_time'] * 1000:.0f} ms")
+                if r["n_holes"] or r["n_parts"] > 1:
+                    st.caption(f"{int(r['n_parts'])} parte(s) · {int(r['n_holes'])} hueco(s) · perímetro total con "
+                               f"huecos: {r['perimeter_m']:,.1f} m")
 
-                label_value = catalog.get(editing).label if editing else st.session_state.label_default
-                label = st.text_input("Etiqueta (asignada por usted; SAM 2 no clasifica)", value=label_value,
-                                      key=f"label_input_{editing}")
+                with st.expander("Forma de la huella", expanded=bool(r["n_holes"] or r["n_parts"] > 1)):
+                    st.checkbox("Rellenar patios y huecos interiores", key="shape_fill",
+                                help="Huella exterior de la edificación: incluye claustros y patios.")
+                    st.slider("Unir partes separadas (px)", 0, 15, key="shape_close",
+                              help="Cierre morfológico: une partes separadas por menos del doble de este valor.")
+                    st.checkbox("Conservar solo la parte principal", key="shape_largest")
+
+                # ---- Categoría (asignada por el usuario; sugerencia opcional con RemoteCLIP) ----
+                cat_key = f"cat_{editing}"
+                custom = sorted({o.label for o in catalog} - set(CATEGORIES) - {"Sin categoría"})
+                options = ["Sin categoría"] + CATEGORIES + custom
+                if cat_key not in st.session_state:
+                    st.session_state[cat_key] = (catalog.get(editing).label if editing
+                                                 else st.session_state.label_default)
+                if st.session_state[cat_key] not in options:
+                    options.append(st.session_state[cat_key])
+                label = st.selectbox("Categoría (la asigna usted; SAM 2 no clasifica)", options, key=cat_key,
+                                     accept_new_options=True, help="Elija de la lista o escriba una nueva.")
+                label = (label or "Sin categoría").strip() or "Sin categoría"
+
+                ok_sem, why_sem = classifier_available()
+                ckey = _cand_key()
+                sugg = st.session_state.suggestions
+                if sugg is None or sugg[0] != ckey:
+                    if st.button("✨ Sugerir categoría (RemoteCLIP)", width="stretch", disabled=not ok_sem,
+                                 help="Clasificador zero-shot de teledetección. Es una sugerencia: usted decide."
+                                 if ok_sem else why_sem):
+                        x0, y0, x1, y1 = _crop_box([mask_c], pad=0)
+                        crop = object_crop(mosaic["img_array"], (x0, y0, x1, y1))
+                        try:
+                            with st.spinner("Clasificando el recorte..."):
+                                st.session_state.suggestions = (ckey, get_semantic_classifier().classify(crop))
+                        except Exception as exc:
+                            st.error(f"No se pudo usar RemoteCLIP: {exc}")
+                        st.rerun()
+                else:
+                    st.caption("Sugerencias de RemoteCLIP — es una ayuda, no una clasificación verificada. "
+                               "Pulse una para adoptarla:")
+                    for cat, prob in sugg[1]:
+                        st.button(f"{cat} · {prob:.0%}", key=f"sug_{cat}", width="stretch",
+                                  on_click=_pick_suggestion, args=(cat, cat_key))
+
                 a1, a2 = st.columns(2)
                 with a1:
                     if st.button("✅ Aceptar objeto", type="primary", width="stretch"):
                         backend_name = type(engine.backend).__name__
+                        src_label = ("RemoteCLIP (confirmada por el usuario)"
+                                     if st.session_state.suggested_pick == label else "usuario")
                         if editing:
-                            catalog.replace_geometry(editing, cand.mask, gdf_c, cand.score, seg.to_dict(),
+                            catalog.replace_geometry(editing, mask_c, gdf_c, cand.score, seg.to_dict(),
                                                      engine.model_key, backend_name)
-                            catalog.update(editing, label=label.strip() or "objeto")
+                            catalog.update(editing, label=label, label_source=src_label)
                             st.toast(f"{editing} actualizado.", icon="✏️")
                         else:
-                            obj = catalog.add_from_mask(cand.mask, gdf_c, cand.score, engine.model_key, backend_name,
-                                                        label=label.strip() or "objeto", prompts=seg.to_dict())
+                            obj = catalog.add_from_mask(mask_c, gdf_c, cand.score, engine.model_key, backend_name,
+                                                        label=label, prompts=seg.to_dict(), label_source=src_label)
                             st.session_state.focus_object_id = obj.object_id
                             st.toast(f"{obj.object_id} añadido al catálogo.", icon="🎉")
-                        st.session_state.label_default = label.strip() or "objeto"
+                        st.session_state.label_default = label
+                        st.session_state.pop(cat_key, None)
                         _reset_editing()
                         st.rerun()
                 with a2:
                     if st.button("🗑️ Descartar", width="stretch"):
+                        st.session_state.pop(cat_key, None)
                         _reset_editing()
                         st.toast("Segmentación descartada.", icon="ℹ️")
                         st.rerun()
@@ -536,6 +626,40 @@ if mosaic_loaded:
                         catalog.remove(o.object_id)
                     st.rerun()
 
+            st.markdown("**Fusionar objetos** — p. ej. nave, claustro y alas de una misma edificación")
+            f1, f2 = st.columns([3, 1])
+            to_merge = f1.multiselect("Objetos a fusionar", ids, label_visibility="collapsed",
+                                      format_func=lambda i: f"{i} · {catalog.get(i).label}",
+                                      placeholder="Elija dos o más objetos")
+            if f2.button("🔗 Fusionar", width="stretch", disabled=len(to_merge) < 2):
+                so = shape_options()
+                conf = min(catalog.get(i).pred_iou for i in to_merge)
+                try:
+                    new = catalog.merge(
+                        to_merge, label=catalog.get(to_merge[0]).label,
+                        postprocess=lambda m: refine_mask(m, min_part_px=min_pixel_area, **so),
+                        gdf_builder=lambda m: mask_to_geodataframe(m, mosaic["transform_3857"], confidence=conf,
+                                                                   min_pixel_area=min_pixel_area,
+                                                                   simplify_px=simplify_px))
+                    st.session_state.focus_object_id = new.object_id
+                    st.toast(f"{len(to_merge)} objetos fusionados en {new.object_id}.", icon="🔗")
+                except ValueError as exc:
+                    st.error(str(exc))
+                st.rerun()
+            st.caption("La fusión usa las opciones de *Forma de la huella* del panel (p. ej. rellenar patios).")
+
+            unl = [o for o in catalog if o.label in ("sin etiquetar", "Sin categoría")]
+            ok_sem, why_sem = classifier_available()
+            if unl and st.button(f"✨ Sugerir categoría a {len(unl)} objeto(s) sin categoría (RemoteCLIP)",
+                                 disabled=not ok_sem, help=None if ok_sem else why_sem):
+                with st.spinner("Clasificando recortes..."):
+                    clf = get_semantic_classifier()
+                    for o in unl:
+                        top = clf.classify(object_crop(mosaic["img_array"], o.bbox_px), top_k=1)[0]
+                        catalog.update(o.object_id, label=top[0], label_source=f"RemoteCLIP {top[1]:.0%} (sin confirmar)")
+                st.toast("Categorías sugeridas: revíselas antes de aceptar los objetos.", icon="✨")
+                st.rerun()
+
     # ---- 8. Detalle y métricas -------------------------------------------------
     with tab_det:
         fid = st.session_state.focus_object_id
@@ -545,12 +669,16 @@ if mosaic_loaded:
             obj = catalog.get(fid)
             r = obj.gdf.iloc[0]
             st.markdown(f"#### {obj.object_id} · {obj.label} · {STATUS_LABELS[obj.status]} · v{obj.version}")
+            st.caption(f"Categoría «{obj.label}» · fuente: {obj.label_source}")
+            if obj.touches_edge:
+                st.warning("Este objeto toca el borde de la ortofoto: puede estar recortado.")
             d1, d2, d3, d4 = st.columns(4)
             d1.metric("Área planar", f"{r['area_m2']:,.2f} m²", help=f"En {r['metric_crs']}")
             d2.metric("Área geodésica", f"{r['area_geod_m2']:,.2f} m²", help="Sobre el elipsoide WGS84")
             d3.metric("Perímetro", f"{r['perimeter_m']:,.2f} m")
             d4.metric("IoU predicho", f"{obj.pred_iou:.3f}")
             metrics_df = pd.DataFrame([
+                ("Perímetro exterior (sin patios)", r.get("perimeter_ext_m", r["perimeter_m"]), "m"),
                 ("Perímetro geodésico", r["perimeter_geod_m"], "m"),
                 ("Área exacta de la máscara", r["pixel_area_m2"], "m²"),
                 ("Píxeles de la máscara", r["pixel_count"], "px"),
@@ -569,6 +697,7 @@ if mosaic_loaded:
                 ("CRS métrico", r["metric_crs"], ""),
                 ("Modelo / backend", f"{obj.model_id} / {obj.backend}", ""),
                 ("Origen", obj.origin, ""),
+                ("Fuente de la categoría", obj.label_source, ""),
             ], columns=["Métrica", "Valor", "Unidad"])
             metrics_df["Valor"] = metrics_df["Valor"].astype(str)
             st.dataframe(metrics_df, hide_index=True, width="stretch")

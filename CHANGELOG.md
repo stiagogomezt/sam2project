@@ -1,5 +1,31 @@
 # Registro de cambios
 
+## [2.1.0] — 2026-11-15 · Edificaciones compuestas, perímetro exterior y categorías
+
+Motivo: al segmentar un convento con un clic, SAM 2 tomaba solo una parte (nave o claustro) y el
+perímetro incluía los bordes de los patios. Además, el complejo quedaba cortado por el borde norte
+de la zona de estudio. Reproducido con la ortofoto real a zoom 19.
+
+### Añadido
+- `src/postprocess.py`: forma de la huella (rellenar patios, unir partes separadas, solo la parte
+  principal, fragmentos mínimos) aplicada a la máscara, de modo que vector, máscara y exportaciones
+  sigan siendo coherentes.
+- Métrica `perimeter_ext_m` (perímetro exterior, sin patios), que el panel muestra como métrica principal.
+- Aviso cuando el objeto toca el borde de la ortofoto (posible recorte), visible en el panel y en el
+  detalle; nuevo atributo `touches_edge`.
+- Fusión de objetos del catálogo (p. ej. nave + claustro + alas) con recálculo de métricas.
+- Categorías: lista catastral/urbana con posibilidad de escribir una nueva, más **sugerencia
+  zero-shot con RemoteCLIP** (`src/semantic.py`) y sugerencia en lote para objetos sin categoría.
+  La fuente se registra en `label_source` ("usuario" o "RemoteCLIP (confirmada por el usuario)").
+- Consejo en el panel para edificaciones compuestas: caja + puntos.
+- Pruebas: `tests/unit/test_postprocess_and_merge.py`, `tests/integration/test_semantic_real.py` y la
+  E2E `test_composite_building_shape_and_category`.
+
+### Cambiado
+- La etiqueta libre pasa a ser un selector "Categoría (la asigna usted; SAM 2 no clasifica)".
+- El texto del flujo de trabajo ya no se muestra como una lista de un solo elemento.
+- `requirements.txt`: se añade `open_clip_torch`.
+
 ## [2.0.0] — 2026-11-15 · Estabilización, multiobjeto y análisis geoespacial
 
 ### Corregido

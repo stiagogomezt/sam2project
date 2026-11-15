@@ -27,8 +27,10 @@ Detalle de lo terminado y lo pendiente: [`docs/ESTADO.md`](docs/ESTADO.md) · Hi
 3. **Selección**: clic sobre el mapa. El visor muestra exactamente las teselas procesadas (`max_native_zoom`) y conserva el zoom entre clics.
 4. **Segmentación**: un clic produce 3 máscaras candidatas con su **IoU predicho**, y usted elige una.
 5. **Refinamiento**: añada puntos ➕ / ➖ o dibuje una ▭ caja con 2 clics. Cada prompt reutiliza los logits de la máscara elegida (`mask_input`). Puede deshacer.
-6. **Validación**: asigne una etiqueta (SAM 2 **no clasifica**: la etiqueta es suya) y acepte o descarte.
-7. **Objeto geoespacial**: polígono EPSG:4326 con métricas en EPSG:9377 (Colombia) o UTM.
+6. **Validación**: elija una categoría (SAM 2 **no clasifica**). Opcionalmente, pida una **sugerencia de RemoteCLIP** (top-3 con probabilidad) y confírmela. Después acepte o descarte.
+7. **Objeto geoespacial**: polígono EPSG:4326 con métricas en EPSG:9377 (Colombia) o UTM. En **Forma de la huella** se pueden rellenar patios, unir partes separadas o conservar solo la parte principal. Si el objeto toca el borde de la ortofoto, la app avisa de que puede estar recortado.
+
+> **Edificaciones compuestas (iglesias, conventos, colegios):** un solo clic segmenta solo una parte (un techo o un patio), porque SAM 2 separa regiones visualmente distintas. Use **▭ Caja** alrededor de todo el conjunto, añada **➕** en las partes que falten y active *Rellenar patios*. También puede segmentar por partes y **fusionarlas** en la pestaña Objetos.
 8. **Métricas**: área planar y geodésica, perímetro, convex hull, solidez, compacidad, rectangularidad, elongación, orientación, centroide y bbox.
 9. **Administración**: tabla editable (visibilidad, etiqueta, estado aceptado/propuesto/rechazado), centrar, refinar (crea una nueva versión), eliminar, estadísticas y relaciones espaciales.
 10. **Exportación**: GeoJSON, GeoPackage multicapa, Shapefile, CSV, GeoTIFF (ortofoto y máscaras) y dataset COCO.
@@ -55,6 +57,8 @@ src/
 ├── mosaic_builder.py      Mosaico + transformación afín EPSG:3857
 ├── sam_engine.py          Pesos compartidos (st.cache_resource), imagen POR SESIÓN, delega en geosam
 ├── interactive.py         Sesión de prompts de un objeto (puntos, caja, logits, deshacer)
+├── postprocess.py         Forma de la huella: patios, unión de partes, parte principal, borde
+├── semantic.py            Sugerencia de categoría zero-shot (RemoteCLIP), separada de SAM 2
 ├── objects.py             Catálogo de objetos (RLE, estados, versiones, visibilidad)
 ├── segmentation.py        Clic ↔ píxel, recortes y superposiciones
 ├── geospatial.py          Vectorización, CRS métrico, métricas de forma, relaciones espaciales
@@ -123,6 +127,8 @@ Se descargan solos la primera vez (escritura atómica y verificación de tamaño
 Variables de entorno opcionales:
 - `SAM2_CHECKPOINT_DIR`: carpeta donde guardar o buscar los `.pt` (por defecto, la raíz del proyecto).
 - `GEOSAM_DISABLE_MOCK=1`: si torch o sam2 faltan, falla en lugar de entrar en modo simulado.
+- `REMOTECLIP_DIR`: carpeta del checkpoint `RemoteCLIP-ViT-B-32.pt` (605 MB; se descarga la primera vez que se pide una sugerencia).
+- `GEOSAM_DISABLE_SEMANTIC=1`: oculta la sugerencia de categorías (por ejemplo, para ahorrar RAM).
 
 > Sin torch o sam2, la app arranca en **MODO SIMULADO** con un aviso rojo permanente: las máscaras son figuras sintéticas y quedan marcadas como `backend = MockBackend` en el catálogo y en las exportaciones.
 
@@ -158,6 +164,7 @@ RUN_E2E=1 pytest tests/e2e -v
 
 | Atributo | Definición |
 |---|---|
+| `perimeter_ext_m` | Perímetro exterior (contorno de la huella, sin patios) |
 | `compactness` | Polsby-Popper 4πA/P² (1 = círculo) |
 | `solidity` | A / A(convex hull) |
 | `rectangularity` | A / A(rectángulo mínimo rotado) |
@@ -184,7 +191,7 @@ RUN_E2E=1 pytest tests/e2e -v
 
 - Archivo principal: `app.py`. Versión de Python probada: 3.13.
 - El primer arranque descarga el checkpoint (≈156 MB), y el contenedor puede perderlo al reiniciarse.
-- Memoria medida: ≈0,8–1,13 GB con SAM 2.1 Tiny. Community Cloud no publica límites fijos; según su foro, una app tiene ≈1 GB garantizado y un máximo de ≈2,7 GB. **Use solo modelos Tiny o Small** en ese entorno.
+- Memoria medida: ≈0,8–1,13 GB con SAM 2.1 Tiny; RemoteCLIP añade ≈600 MB (mapeados del archivo) solo si se usa. SAM 2.1 Large en CPU necesita ≈2,1 GB, así que **no** lo use en Community Cloud. Community Cloud no publica límites fijos; según su foro, una app tiene ≈1 GB garantizado y un máximo de ≈2,7 GB. **Use solo modelos Tiny o Small** en ese entorno.
 - La generación automática tarda ≈15 s (8×8 puntos) o ≈35-40 s (16×16) con 2 vCPU.
 
 ## Licencia

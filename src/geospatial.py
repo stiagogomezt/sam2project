@@ -40,7 +40,7 @@ from config import CRS_GEOGRAPHIC, CRS_WEB_MERCATOR, CRS_COLOMBIA_METRIC
 # Orden de columnas de atributos producidas por mask_to_geodataframe
 ATTRIBUTE_COLUMNS = [
     "object_id", "label", "pred_iou",
-    "area_m2", "perimeter_m", "area_geod_m2", "perimeter_geod_m", "pixel_area_m2", "pixel_count",
+    "area_m2", "perimeter_m", "perimeter_ext_m", "area_geod_m2", "perimeter_geod_m", "pixel_area_m2", "pixel_count",
     "hull_area_m2", "solidity", "compactness", "rectangularity",
     "elongation", "aspect_ratio", "orientation_deg", "mrr_length_m", "mrr_width_m",
     "n_parts", "n_holes",
@@ -77,6 +77,8 @@ def select_metric_crs(lon: float, lat: float) -> str:
 def compute_shape_metrics(geom: BaseGeometry) -> Dict[str, Any]:
     """Descriptores de forma de una geometría expresada en un CRS MÉTRICO.
 
+    - perimeter_m incluye los bordes de los huecos (patios); perimeter_ext_m solo el contorno exterior.
+
     - compactness (Polsby-Popper) = 4πA / P²  → 1 círculo, ≈0.785 cuadrado, →0 formas irregulares.
     - solidity = A / A(convex hull)           → 1 convexo; baja con concavidades.
     - rectangularity = A / A(rectángulo mínimo rotado) → 1 rectángulo.
@@ -107,9 +109,12 @@ def compute_shape_metrics(geom: BaseGeometry) -> Dict[str, Any]:
 
     parts = list(geom.geoms) if isinstance(geom, MultiPolygon) else [geom]
     n_holes = sum(len(p.interiors) for p in parts if isinstance(p, Polygon))
+    # Perímetro exterior: solo anillos exteriores (sin patios/huecos); es el contorno de la huella.
+    perim_ext = float(sum(p.exterior.length for p in parts if isinstance(p, Polygon)))
     return {
         "area_m2": area,
         "perimeter_m": perim,
+        "perimeter_ext_m": perim_ext,
         "hull_area_m2": hull_area,
         "solidity": area / hull_area if hull_area > 0 else 0.0,
         "compactness": 4.0 * math.pi * area / (perim ** 2) if perim > 0 else 0.0,
@@ -205,6 +210,7 @@ def mask_to_geodataframe(
         "pred_iou": round(float(confidence), 4),
         "area_m2": round(metrics["area_m2"], 2),
         "perimeter_m": round(metrics["perimeter_m"], 2),
+        "perimeter_ext_m": round(metrics["perimeter_ext_m"], 2),
         "area_geod_m2": round(area_geod, 2),
         "perimeter_geod_m": round(perim_geod, 2),
         "pixel_area_m2": round(pixel_area_m2, 2),

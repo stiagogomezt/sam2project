@@ -42,6 +42,16 @@ Vectorización con filtro de área mínima (antes el parámetro no se usaba), si
 ### Fase 5 — Explotación
 GeoJSON, GeoPackage multicapa, Shapefile con nombres legibles, CSV, GeoTIFF de la ortofoto y de las máscaras, dataset COCO y PNG. También estadísticas por estado y por etiqueta, con gráfico de áreas. Evidencia: U y E (los 7 archivos descargados desde el navegador y validados con geopandas, pyogrio y rasterio).
 
+### v2.1 — Edificaciones compuestas y categorías
+| Funcionalidad | Evidencia |
+|---|---|
+| Forma de la huella (patios, unión, parte principal) aplicada a la máscara | U `test_postprocess_and_merge.py` |
+| Perímetro exterior (`perimeter_ext_m`) | U |
+| Aviso de objeto recortado por el borde | U, M (convento en la zona por defecto) |
+| Fusión de objetos | U `test_catalog_merge_with_postprocess` |
+| Categorías + sugerencia RemoteCLIP (individual y en lote) | I `test_semantic_real.py`, E `test_composite_building_shape_and_category` |
+| Convento completo en la app (caja + 5 puntos + patios, Large) | E manual: 1 parte, IoU pred. 0,936, ≈15 340 m², perím. ext. ≈698 m |
+
 ## Pendiente
 
 | Elemento | Situación | Siguiente paso |
@@ -49,7 +59,7 @@ GeoJSON, GeoPackage multicapa, Shapefile con nombres legibles, CSV, GeoTIFF de l
 | Persistencia entre sesiones | El catálogo vive en `st.session_state` y se pierde al cerrar la pestaña. `geosam/store` (SQLite + versiones) existe pero no está conectado | Guardar y cargar el proyecto `.gpkg`/SQLite usando `GeoSamRepository` |
 | Ventanas de trabajo para mosaicos grandes | Por encima de 1024 px, SAM 2 pierde resolución efectiva (se avisa) | Embedding por ventana de 1024 px centrada en el primer prompt |
 | CLI `cli/main.py` | Comandos declarados que solo imprimen texto | Conectar con `src/` y `geosam/` |
-| `src/classifier.py` | No conectado: necesita banda NIR (4 bandas) y Esri entrega RGB | Clasificación semántica complementaria sobre RGB (p. ej. un clasificador entrenado con el dataset COCO exportado) |
+| `src/classifier.py` | No conectado: necesita banda NIR (4 bandas) y Esri entrega RGB. La clasificación sobre RGB la cubre ahora `src/semantic.py` (sugerencias) | Clasificador supervisado entrenado con el dataset COCO exportado |
 | SAM 3 (`geosam/backends/sam3.py`) | Esqueleto | Integrar cuando haya checkpoint y licencia verificados |
 | Fase 6: multitemporal, detección de cambios, propagación/tracking, fine-tuning | No implementado | Ver la propuesta de diseño abajo |
 | Caché de embeddings en disco | `EmbeddingCache.cache_dir` declarado pero sin implementar | Serializar `_features` con `torch.save` por hash |
