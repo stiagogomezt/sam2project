@@ -79,6 +79,33 @@ class MockBackend:
             },
         )
 
+    def predict(
+        self,
+        emb: ImageEmbedding,
+        pts_xy: np.ndarray | None = None,
+        labels: np.ndarray | None = None,
+        box_xyxy: tuple[float, float, float, float] | np.ndarray | None = None,
+        mask_logits: np.ndarray | None = None,
+        multimask: bool = True,
+    ) -> list[MaskCandidate]:
+        """Combinación simulada de prompts (misma semántica que SAM2Backend.predict)."""
+        if pts_xy is None and box_xyxy is None and mask_logits is None:
+            raise ValueError("Se requiere al menos un prompt (puntos, caja o máscara).")
+        if mask_logits is not None:
+            return self.predict_mask(emb, mask_logits, pts_xy, labels)
+        if box_xyxy is not None:
+            box_c = self.predict_box(emb, box_xyxy)
+            if pts_xy is None:
+                return box_c
+            pts_c = self.predict_points(emb, pts_xy, labels, multimask=False)
+            m = box_c[0].mask | pts_c[0].mask
+            for pt, lbl in zip(np.asarray(pts_xy), np.asarray(labels)):
+                if lbl == 0:
+                    yy, xx = np.ogrid[: m.shape[0], : m.shape[1]]
+                    m &= ~((xx - pt[0]) ** 2 + (yy - pt[1]) ** 2 <= 15 ** 2)
+            return [self._make_candidate(m, score=0.93)]
+        return self.predict_points(emb, pts_xy, labels, multimask=multimask)
+
     def predict_points(
         self,
         emb: ImageEmbedding,

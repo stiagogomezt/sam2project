@@ -2,12 +2,18 @@
 torch>=2.2.0
 torchvision
 git+https://github.com/facebookresearch/sam2.git
-streamlit
-streamlit-folium
-rasterio
-geopandas
-shapely
-folium
+# >=1.67: segmented_control, width="stretch", descargas diferidas (data callable) y on_click="ignore"
+streamlit>=1.67,<2
+# >=0.27: feature_group_to_add (capas dinámicas sin re-renderizar el mapa)
+streamlit-folium>=0.27
+folium>=0.20
+rasterio>=1.4
+geopandas>=1.0
+shapely>=2.0
+pyproj>=3.6
+pandas
+numpy
+pillow
 mercantile
 requests
 click

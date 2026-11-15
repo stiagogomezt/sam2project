@@ -6,6 +6,7 @@ Implementa el protocolo SegmentationBackend utilizando la API oficial de Meta:
 
 from __future__ import annotations
 import os
+import threading
 from pathlib import Path
 from typing import Any
 import numpy as np
@@ -23,6 +24,7 @@ class SAM2Backend:
         config_name: str = "sam2_hiera_t.yaml",
         model_id: str = "sam2_hiera_tiny",
         cache_dir: Path | str | None = None,
+        max_cache_entries: int = 16,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path else None
         self.config_name = config_name
@@ -30,8 +32,13 @@ class SAM2Backend:
         self.device = "cpu"
         self.model = None
         self.predictor = None
-        self.cache = EmbeddingCache(cache_dir=cache_dir)
+        self.cache = EmbeddingCache(cache_dir=cache_dir, max_memory_entries=max_cache_entries)
         self.is_loaded = False
+        # El SAM2ImagePredictor guarda la imagen activa en atributos privados (_features, _orig_hw).
+        # Un mismo backend puede ser compartido por varios hilos (p. ej. sesiones de Streamlit):
+        # cada embed/predict restaura el estado de SU embedding bajo este lock.
+        self._lock = threading.RLock()
+        self.mask_threshold = 0.0
 
     def load(self, device: str = "cpu") -> None:
         """Carga el modelo SAM 2 usando la librería oficial sam2."""
@@ -53,7 +60,22 @@ class SAM2Backend:
         # Inicializar modelo SAM 2
         self.model = build_sam2(self.config_name, ckpt_str, device=device)
         self.predictor = SAM2ImagePredictor(self.model)
+        self.mask_threshold = float(getattr(self.predictor, "mask_threshold", 0.0))
         self.is_loaded = True
+
+    def _activate(self, emb: ImageEmbedding) -> None:
+        """Restaura en el predictor el estado de imagen de `emb` (llamar con el lock adquirido)."""
+        feats = emb.features.get("_features") if isinstance(emb.features, dict) else None
+        if feats is None:
+            raise RuntimeError("El embedding no contiene características de SAM 2 (_features).")
+        if emb.model_id != self.model_id:
+            raise ValueError(
+                f"El embedding fue calculado con '{emb.model_id}' y el backend es '{self.model_id}'."
+            )
+        self.predictor._features = feats
+        self.predictor._orig_hw = [tuple(emb.original_size)]
+        self.predictor._is_image_set = True
+        self.predictor._is_batch = False
 
     def embed(self, image: np.ndarray) -> ImageEmbedding:
         """Calcula y almacena en caché el embedding de la imagen.
@@ -65,22 +87,18 @@ class SAM2Backend:
 
         img_hash = compute_image_hash(image)
         cache_key = self.cache.make_key(img_hash, self.model_id, version="2.1")
-        cached_emb = self.cache.get(cache_key)
-        if cached_emb is not None:
-            # Restaurar el estado en el predictor
-            self.predictor._features = cached_emb.features.get("_features")
-            self.predictor._is_image_set = True
-            self.predictor._orig_hw = [cached_emb.original_size]
-            self.predictor._is_batch = False
-            return cached_emb
+        with self._lock:
+            cached_emb = self.cache.get(cache_key)
+            if cached_emb is not None:
+                self._activate(cached_emb)
+                return cached_emb
 
-        h, w = image.shape[:2]
-        # set_image en SAM 2 computa el encoder de visión
-        self.predictor.set_image(image)
-
-        features = {
-            "_features": getattr(self.predictor, "_features", None),
-        }
+            h, w = image.shape[:2]
+            # set_image en SAM 2 computa el encoder de visión
+            self.predictor.set_image(image)
+            features = {
+                "_features": getattr(self.predictor, "_features", None),
+            }
 
         emb = ImageEmbedding(
             features=features,
@@ -112,7 +130,10 @@ class SAM2Backend:
             logits = logits[np.newaxis, ...]
 
         for i in range(len(masks)):
-            m = masks[i].astype(bool)
+            # Con return_logits=True `masks` contiene logits a resolución completa: hay que
+            # umbralizarlos (mask_threshold=0.0 en SAM 2). `astype(bool)` marcaría como objeto
+            # cualquier logit distinto de cero, es decir, casi toda la imagen.
+            m = masks[i] > self.mask_threshold if masks.dtype != bool else masks[i]
             sc = float(scores[i])
             lg = logits[i].astype(np.float32) if logits is not None else None
 
@@ -139,6 +160,50 @@ class SAM2Backend:
             )
         return candidates
 
+    def predict(
+        self,
+        emb: ImageEmbedding,
+        pts_xy: np.ndarray | None = None,
+        labels: np.ndarray | None = None,
+        box_xyxy: tuple[float, float, float, float] | np.ndarray | None = None,
+        mask_logits: np.ndarray | None = None,
+        multimask: bool = True,
+    ) -> list[MaskCandidate]:
+        """Predicción general de SAM 2 combinando puntos (+/-), caja y máscara previa.
+
+        - pts_xy: (N, 2) en píxeles (x=col, y=row); labels: (N,) 1=positivo, 0=negativo.
+        - box_xyxy: (xmin, ymin, xmax, ymax) en píxeles.
+        - mask_logits: logits de baja resolución (256x256) de una predicción anterior
+          (refinamiento iterativo oficial de SAM).
+        Devuelve 3 candidatas si multimask=True, 1 en caso contrario.
+        """
+        if not self.is_loaded or self.predictor is None:
+            raise RuntimeError("Backend SAM 2 no inicializado. Ejecute load().")
+        if pts_xy is None and box_xyxy is None and mask_logits is None:
+            raise ValueError("Se requiere al menos un prompt (puntos, caja o máscara).")
+
+        h, w = emb.original_size
+        point_coords = np.asarray(pts_xy, dtype=np.float32).reshape(-1, 2) if pts_xy is not None else None
+        point_labels = np.asarray(labels, dtype=np.int32).reshape(-1) if labels is not None else None
+        if point_coords is not None and (point_labels is None or len(point_labels) != len(point_coords)):
+            raise ValueError("pts_xy y labels deben tener la misma longitud.")
+        box = np.asarray(box_xyxy, dtype=np.float32) if box_xyxy is not None else None
+        mask_input = None
+        if mask_logits is not None:
+            mask_input = mask_logits[np.newaxis, ...] if mask_logits.ndim == 2 else mask_logits
+
+        with self._lock:
+            self._activate(emb)
+            masks, scores, logits = self.predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                box=box,
+                mask_input=mask_input,
+                multimask_output=multimask,
+                return_logits=True,
+            )
+        return self._format_candidates(masks, scores, logits, h, w)
+
     def predict_points(
         self,
         emb: ImageEmbedding,
@@ -147,23 +212,7 @@ class SAM2Backend:
         multimask: bool = True,
     ) -> list[MaskCandidate]:
         """Genera máscaras a partir de prompts de puntos positivos (1) y negativos (0)."""
-        if not self.is_loaded or self.predictor is None:
-            raise RuntimeError("Backend SAM 2 no inicializado. Ejecute load().")
-
-        h, w = emb.original_size
-        point_coords = np.asarray(pts_xy, dtype=np.float32)
-        point_labels = np.asarray(labels, dtype=np.int32)
-
-        masks, scores, logits = self.predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            box=None,
-            mask_input=None,
-            multimask_output=multimask,
-            return_logits=True,
-        )
-
-        return self._format_candidates(masks, scores, logits, h, w)
+        return self.predict(emb, pts_xy=pts_xy, labels=labels, multimask=multimask)
 
     def predict_box(
         self,
@@ -171,22 +220,7 @@ class SAM2Backend:
         box_xyxy: tuple[float, float, float, float] | np.ndarray,
     ) -> list[MaskCandidate]:
         """Genera máscaras a partir de una caja delimitadora (xmin, ymin, xmax, ymax)."""
-        if not self.is_loaded or self.predictor is None:
-            raise RuntimeError("Backend SAM 2 no inicializado. Ejecute load().")
-
-        h, w = emb.original_size
-        box = np.asarray(box_xyxy, dtype=np.float32)
-
-        masks, scores, logits = self.predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=box,
-            mask_input=None,
-            multimask_output=False,
-            return_logits=True,
-        )
-
-        return self._format_candidates(masks, scores, logits, h, w)
+        return self.predict(emb, box_xyxy=box_xyxy, multimask=False)
 
     def predict_mask(
         self,
@@ -195,26 +229,8 @@ class SAM2Backend:
         pts_xy: np.ndarray | None = None,
         labels: np.ndarray | None = None,
     ) -> list[MaskCandidate]:
-        """Refina una máscara previa usando sus logits y clics adicionales."""
-        if not self.is_loaded or self.predictor is None:
-            raise RuntimeError("Backend SAM 2 no inicializado. Ejecute load().")
-
-        h, w = emb.original_size
-        mask_input = prev_mask_logits[np.newaxis, ...] if prev_mask_logits.ndim == 2 else prev_mask_logits
-
-        point_coords = np.asarray(pts_xy, dtype=np.float32) if pts_xy is not None else None
-        point_labels = np.asarray(labels, dtype=np.int32) if labels is not None else None
-
-        masks, scores, logits = self.predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            box=None,
-            mask_input=mask_input,
-            multimask_output=False,
-            return_logits=True,
-        )
-
-        return self._format_candidates(masks, scores, logits, h, w)
+        """Refina una máscara previa usando sus logits (256x256) y clics adicionales."""
+        return self.predict(emb, pts_xy=pts_xy, labels=labels, mask_logits=prev_mask_logits, multimask=False)
 
     def predict_concept(
         self,
@@ -240,7 +256,8 @@ class SAM2Backend:
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
         generator = SAM2AutomaticMaskGenerator(self.model, **kwargs)
-        results = generator.generate(image)
+        with self._lock:  # evita competir por CPU/RAM con otras inferencias del mismo modelo
+            results = generator.generate(image)
 
         candidates = []
         for i, item in enumerate(results):

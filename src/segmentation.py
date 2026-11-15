@@ -32,6 +32,13 @@ def coordinates_to_pixel(
         
     return col, row
 
+def pixel_to_coordinates(col: float, row: float, transform_3857: rasterio.Affine) -> Tuple[float, float]:
+    """Inversa de `coordinates_to_pixel`: centro del píxel (col, row) → (lon, lat) WGS84."""
+    xm, ym = transform_3857 * (col + 0.5, row + 0.5)
+    lnglat = mercantile.lnglat(xm, ym)
+    return float(lnglat.lng), float(lnglat.lat)
+
+
 def extract_cutout(
     img_array: np.ndarray,
     mask: np.ndarray,

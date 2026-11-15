@@ -70,6 +70,19 @@ class SAM3Backend:
         self.cache.put(cache_key, emb)
         return emb
 
+    def predict(
+        self,
+        emb: ImageEmbedding,
+        pts_xy: np.ndarray | None = None,
+        labels: np.ndarray | None = None,
+        box_xyxy: tuple[float, float, float, float] | np.ndarray | None = None,
+        mask_logits: np.ndarray | None = None,
+        multimask: bool = True,
+    ) -> list[MaskCandidate]:
+        if not self.is_loaded:
+            raise RuntimeError("SAM3Backend no inicializado.")
+        raise NotImplementedError("Inferencia geométrica en SAM 3 sujeta a la integración del checkpoint oficial.")
+
     def predict_points(
         self,
         emb: ImageEmbedding,

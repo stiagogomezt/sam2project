@@ -1,87 +1,192 @@
-# 🛰️ SAM 2 GeoExtractor (SAM2_STREAMLIT_APP)
+# 🛰️ SAM 2 GeoExtractor
 
-> **Herramienta SIG para la Extracción Inteligente de Objetos Geoespaciales a partir de Imágenes Aéreas y Satelitales de Alta Resolución mediante Segment Anything Model 2 (SAM 2).**
+> Segmentación interactiva de objetos en imágenes aéreas y satelitales de alta resolución con **Segment Anything Model 2 (SAM 2)**, convertida en **entidades geoespaciales medibles y exportables**.
 
----
-
-## 📌 Descripción General
-
-**SAM2_STREAMLIT_APP** es una plataforma de análisis geoespacial interactiva desarrollada en **Python** y **Streamlit**. Permite a analistas SIG, ingenieros de teledetección y científicos de datos:
-
-1. **Definir Zonas de Estudio**: Configuración y validación matemática de Bounding Box (WGS84).
-2. **Descarga Continua de Ortofotos**: Descarga multihilo de teselas de alta resolución (Esri World Imagery) y ensamblado de mosaico georreferenciado sin desfase espacial.
-3. **Mapeo Sub-Píxel de Clics**: Conversión matemática rigurosa entre Leaflet/Folium y la matriz ráster nativa (**EPSG:3857**).
-4. **Segmentación con IA (SAM 2)**: Inferencia interactiva con pre-cómputo de embeddings para segmentación instantánea al clic.
-5. **Control de Calidad (Aceptar/Reintentar)**: Validación interactiva del objeto antes de su persistencia.
-6. **Extracción y Cálculo Espacial**: Recorte con canal alfa (RGBA) y cálculo de superficie ($m^2$) y perímetro ($m$) en proyecciones métricas oficiales (**EPSG:3116** / UTM).
-7. **Exportación Multiformato**: GeoJSON vectorial con metadatos enriquecidos, GeoTIFF georreferenciado, PNG transparente, Shapefile (.zip) y CSV.
+La aplicación (Python + Streamlit) descarga una ortofoto georreferenciada (Esri World Imagery), deja segmentar objetos con prompts de SAM 2 (puntos positivos y negativos, cajas, refinamiento iterativo, salida multimáscara y generación automática), los administra como catálogo y calcula sus atributos geométricos en un CRS métrico oficial. Después exporta todo a formatos SIG y a un dataset COCO propio.
 
 ---
 
-## 🏗️ Arquitectura Modular
+## Estado verificado (2026-11-15)
 
+| Verificación | Resultado |
+|---|---|
+| `python test_pipeline.py` | 4/4 ✅ |
+| `pytest` (unitarias + integración con **SAM 2 real**) | 40 ✅ (1 módulo E2E omitido sin `RUN_E2E=1`) |
+| `RUN_E2E=1 pytest tests/e2e` (navegador real, teselas reales, SAM 2.1 real) | 3/3 ✅ |
+| Rendimiento medido (CPU, 2 vCPU, SAM 2.1 Tiny, mosaico 768×768) | carga 0,6 s · embedding ≈1,9 s · decodificador ≈0,1–0,2 s por prompt |
+| Memoria del servidor | ≈0,8 GB con el modelo cargado · pico ≈1,13 GB al calcular el embedding · ≈0,9 GB en reposo |
+
+Detalle de lo terminado y lo pendiente: [`docs/ESTADO.md`](docs/ESTADO.md) · Historial: [`CHANGELOG.md`](CHANGELOG.md) · Decisiones técnicas: [`docs/DECISIONES.md`](docs/DECISIONES.md).
+
+---
+
+## Flujo de trabajo
+
+1. **Zona de estudio**: BBOX en WGS84 y zoom de teselas. La barra lateral muestra la resolución de la imagen y la **resolución efectiva para SAM 2**, porque el modelo reduce toda imagen a 1024×1024 px.
+2. **Ortofoto**: descarga concurrente, mosaico georreferenciado en EPSG:3857 y embedding de SAM 2. Si alguna tesela falla, se avisa.
+3. **Selección**: clic sobre el mapa. El visor muestra exactamente las teselas procesadas (`max_native_zoom`) y conserva el zoom entre clics.
+4. **Segmentación**: un clic produce 3 máscaras candidatas con su **IoU predicho**, y usted elige una.
+5. **Refinamiento**: añada puntos ➕ / ➖ o dibuje una ▭ caja con 2 clics. Cada prompt reutiliza los logits de la máscara elegida (`mask_input`). Puede deshacer.
+6. **Validación**: asigne una etiqueta (SAM 2 **no clasifica**: la etiqueta es suya) y acepte o descarte.
+7. **Objeto geoespacial**: polígono EPSG:4326 con métricas en EPSG:9377 (Colombia) o UTM.
+8. **Métricas**: área planar y geodésica, perímetro, convex hull, solidez, compacidad, rectangularidad, elongación, orientación, centroide y bbox.
+9. **Administración**: tabla editable (visibilidad, etiqueta, estado aceptado/propuesto/rechazado), centrar, refinar (crea una nueva versión), eliminar, estadísticas y relaciones espaciales.
+10. **Exportación**: GeoJSON, GeoPackage multicapa, Shapefile, CSV, GeoTIFF (ortofoto y máscaras) y dataset COCO.
+
+### Qué viene de SAM 2 y qué aporta esta aplicación
+
+| Capacidad oficial de SAM 2 | Implementación propia de la app |
+|---|---|
+| Prompts de puntos (+/−), caja y máscara (`mask_input`) | Historial de prompts, deshacer, caja con 2 clics y regla de cuándo pedir 3 candidatas |
+| `multimask_output` + IoU predicho | Selector visual de candidatas |
+| `SAM2AutomaticMaskGenerator` | Resultados como objetos *propuestos* para aceptar o rechazar |
+| — | Catálogo, versiones, métricas, relaciones espaciales, exportación GIS y dataset COCO |
+
+---
+
+## Arquitectura
+
+```text
+app.py                     UI Streamlit (solo orquesta estado y widgets)
+config.py                  Constantes, modelos SAM 2/2.1, CRS
+src/
+├── tile_manager.py        BBOX → teselas XYZ
+├── imagery_loader.py      Descarga concurrente con informe de teselas fallidas
+├── mosaic_builder.py      Mosaico + transformación afín EPSG:3857
+├── sam_engine.py          Pesos compartidos (st.cache_resource), imagen POR SESIÓN, delega en geosam
+├── interactive.py         Sesión de prompts de un objeto (puntos, caja, logits, deshacer)
+├── objects.py             Catálogo de objetos (RLE, estados, versiones, visibilidad)
+├── segmentation.py        Clic ↔ píxel, recortes y superposiciones
+├── geospatial.py          Vectorización, CRS métrico, métricas de forma, relaciones espaciales
+├── exporter.py            GeoJSON, GPKG, SHP, CSV, GeoTIFF, máscaras, COCO
+├── visualization.py       Mapa base estable + capas dinámicas (Folium)
+├── highres_loader.py      Fachada retrocompatible
+└── classifier.py          NDVI/NDWI (requiere 4 bandas; NO conectado, ver docs/ESTADO.md)
+geosam/                    Núcleo independiente de la UI
+├── backends/              Protocolo SegmentationBackend, SAM2Backend, MockBackend, SAM3 (esqueleto), caché
+├── store/                 Persistencia SQLite con versionado inmutable (aún no conectada a la UI)
+└── utils/rle.py           RLE COCO
+cli/                       CLI Click (comandos declarados, sin lógica todavía)
+tests/
+├── unit/                  Rápidas, sin GPU (MockBackend)
+├── integration/           SAM 2 real (se omiten si no hay checkpoint)
+└── e2e/                   Navegador real con Playwright (RUN_E2E=1)
 ```
-sam2_streamlit_app/
-├── config.py                 # Parámetros espaciales, BBOX por defecto y configs de SAM 2
-├── app.py                    # Interfaz web interactiva en Streamlit
-├── test_pipeline.py          # Suite de pruebas automatizadas
-├── requirements.txt          # Dependencias del proyecto
-└── src/
-    ├── tile_manager.py       # Cálculo de teselas y validación de BBOX
-    ├── imagery_loader.py     # Descarga concurrente con reintentos HTTP
-    ├── mosaic_builder.py     # Ensamblado de mosaico y georreferenciación Afín en EPSG:3857
-    ├── highres_loader.py     # Adaptador retrocompatible
-    ├── sam_engine.py         # Inferencia SAM 2, detección CUDA/CPU y cache
-    ├── segmentation.py       # Mapeo de coordenadas y recorte con canal alfa
-    ├── geospatial.py         # Vectorización de máscaras y cálculo métrico (m², perímetro)
-    ├── exporter.py           # Generación de GeoJSON, GeoTIFF, PNG, Shapefile y CSV
-    └── visualization.py      # Mapas interactivos con Folium
+
+```mermaid
+flowchart LR
+  UI[app.py] --> ENG[src/sam_engine.py]
+  ENG --> BE[geosam SAM2Backend]
+  BE --> SAM[(SAM 2 / 2.1)]
+  UI --> INT[src/interactive.py] --> ENG
+  UI --> CAT[src/objects.py] --> RLE[geosam/utils/rle.py]
+  UI --> GEO[src/geospatial.py]
+  UI --> EXP[src/exporter.py]
+  UI --> VIS[src/visualization.py]
 ```
+
+**Concurrencia:** los pesos del modelo se comparten entre usuarios, pero cada sesión guarda su propio `ImageEmbedding`. El backend restaura ese estado bajo un lock antes de cada inferencia; `tests/integration/test_sam2_real.py::test_sessions_do_not_overwrite_each_other` lo comprueba con dos hilos.
 
 ---
 
-## 🚀 Instalación y Puesta en Marcha
+## Instalación
 
-### 1. Clonar el Repositorio
-```bash
+### Windows (PowerShell)
+```powershell
 git clone https://github.com/stiagogomezt/sam2project.git
 cd sam2project
-```
-
-### 2. Entorno Virtual y Dependencias
-```bash
 python -m venv venv
-# En Windows:
-.\venv\Scripts\activate
-# En Linux/Mac:
-source venv/bin/activate
-
-# Instalar dependencias
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 3. Pesos del Modelo SAM 2
-La aplicación descarga automáticamente los pesos del modelo configurado (`sam2_hiera_tiny.pt`), o puedes descargarlos manualmente:
-- [sam2_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt)
-- [sam2_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt)
-- [sam2_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt)
+### Linux / macOS / WSL
+```bash
+git clone https://github.com/stiagogomezt/sam2project.git
+cd sam2project
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+```
 
-### 4. Ejecutar la Aplicación
+`requirements.txt` instala PyTorch **CPU**. Con GPU NVIDIA, instale antes el `torch` CUDA adecuado desde pytorch.org; la app usa CUDA automáticamente si `torch.cuda.is_available()`.
+
+### Pesos del modelo
+Se descargan solos la primera vez (escritura atómica y verificación de tamaño). Por defecto se usa **SAM 2.1 Tiny** (≈156 MB):
+
+| Clave | Checkpoint |
+|---|---|
+| `sam2.1_hiera_tiny` (por defecto) | https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt |
+| `sam2.1_hiera_small` | …/092824/sam2.1_hiera_small.pt |
+| `sam2.1_hiera_large` | …/092824/sam2.1_hiera_large.pt (requiere GPU en la práctica) |
+| `sam2_hiera_tiny/small/large` | …/072824/… (versión original, conservada) |
+
+Variables de entorno opcionales:
+- `SAM2_CHECKPOINT_DIR`: carpeta donde guardar o buscar los `.pt` (por defecto, la raíz del proyecto).
+- `GEOSAM_DISABLE_MOCK=1`: si torch o sam2 faltan, falla en lugar de entrar en modo simulado.
+
+> Sin torch o sam2, la app arranca en **MODO SIMULADO** con un aviso rojo permanente: las máscaras son figuras sintéticas y quedan marcadas como `backend = MockBackend` en el catálogo y en las exportaciones.
+
+---
+
+## Ejecución
+
 ```bash
 streamlit run app.py
 ```
 
----
+## Pruebas
 
-## 🧪 Pruebas Automatizadas
-
-Ejecutar la suite de pruebas geoespaciales:
 ```bash
-python test_pipeline.py
+python test_pipeline.py                 # pipeline geoespacial (sin red ni modelo)
+pytest                                  # unitarias + integración con SAM 2 real (si hay checkpoint)
+SAM2_TEST_MODEL=sam2_hiera_tiny pytest tests/integration   # otro checkpoint
+
+# Interfaz en navegador real (red + checkpoint):
+pip install -r requirements-dev.txt
+python -m playwright install chromium
+RUN_E2E=1 pytest tests/e2e -v
 ```
 
 ---
 
-## 📄 Licencia
+## Métricas y sistemas de referencia
 
-Este proyecto está bajo la Licencia MIT.
+- **Nunca** se mide en grados (DEC-0004). CRS métrico: **EPSG:9377** (MAGNA-SIRGAS 2018 / Origen-Nacional) dentro de su área de uso oficial (Colombia continental e insular). Fuera de ella, la zona **UTM** correspondiente.
+- `area_m2` y `perimeter_m` son planares en ese CRS; `area_geod_m2` y `perimeter_geod_m` se calculan sobre el elipsoide WGS84. En Bogotá difieren ≈0,1 % por el factor de escala k₀ = 0,9992 de 9377.
+- El contorno ráster en escalera sobrestima el perímetro ≈28 %. Por eso se simplifica a **1 px** (Douglas-Peucker): el error de perímetro queda en ≈1 % y el de área por debajo de 1 %. Es configurable en la barra lateral, y `pixel_area_m2` conserva el área exacta de la máscara.
+- `pred_iou` es el **IoU predicho por SAM 2** (calidad estimada de la máscara), **no** una probabilidad de clase.
+
+| Atributo | Definición |
+|---|---|
+| `compactness` | Polsby-Popper 4πA/P² (1 = círculo) |
+| `solidity` | A / A(convex hull) |
+| `rectangularity` | A / A(rectángulo mínimo rotado) |
+| `elongation` | 1 − ancho/largo del rectángulo mínimo rotado |
+| `orientation_deg` | Acimut de cuadrícula del eje largo, horario desde el norte, [0, 180) |
+| `gsd_m` | Tamaño real del píxel sobre el terreno |
+
+## Exportación
+
+| Formato | Contenido |
+|---|---|
+| GeoJSON | Objetos (EPSG:4326) con todos los atributos |
+| GeoPackage | Capas `objetos`, `centroides`, `bbox`, `convex_hull`, `rect_min_rotado` |
+| Shapefile (.zip) | Campos DBF ≤ 10 caracteres explícitos + `campos.csv` con los nombres completos |
+| CSV | Atributos sin geometría |
+| GeoTIFF ortofoto | Mosaico RGB en EPSG:3857 |
+| GeoTIFF máscaras | uint16: 0 = fondo; cada objeto con su `raster_value` |
+| Dataset COCO (.zip) | PNG + `instances.json` (RLE) + `georreferencia.json` (afín + CRS) |
+| PNG | Recorte RGBA del objeto seleccionado |
+
+---
+
+## Despliegue en Streamlit Community Cloud
+
+- Archivo principal: `app.py`. Versión de Python probada: 3.13.
+- El primer arranque descarga el checkpoint (≈156 MB), y el contenedor puede perderlo al reiniciarse.
+- Memoria medida: ≈0,8–1,13 GB con SAM 2.1 Tiny. Community Cloud no publica límites fijos; según su foro, una app tiene ≈1 GB garantizado y un máximo de ≈2,7 GB. **Use solo modelos Tiny o Small** en ese entorno.
+- La generación automática tarda ≈15 s (8×8 puntos) o ≈35-40 s (16×16) con 2 vCPU.
+
+## Licencia
+
+Código bajo licencia MIT. Modelos y datos con sus propias licencias: ver [`docs/LICENCIAS.md`](docs/LICENCIAS.md) (SAM 2: Apache 2.0; Esri World Imagery: términos de Esri).

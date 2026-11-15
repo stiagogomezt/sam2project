@@ -14,7 +14,7 @@ import numpy as np
 class MaskCandidate:
     """Representa una máscara predicha por un backend de segmentación con sus metadatos asociados."""
     mask: np.ndarray  # bool [H, W]
-    logits: np.ndarray | None  # float32 [H, W] o None
+    logits: np.ndarray | None  # float32 de baja resolución (SAM 2: [256, 256]); entrada válida para mask_input
     score: float  # Confianza predicha por el modelo en el rango [0.0, 1.0]
     bbox_px: tuple[int, int, int, int]  # (xmin, ymin, xmax, ymax) en coordenadas de pixel
     backend_meta: dict[str, Any] = field(default_factory=dict)
@@ -55,6 +55,18 @@ class SegmentationBackend(Protocol):
 
         Retorna un objeto ImageEmbedding con hash SHA256 para permitir caché en memoria y disco.
         """
+        ...
+
+    def predict(
+        self,
+        emb: ImageEmbedding,
+        pts_xy: np.ndarray | None = None,
+        labels: np.ndarray | None = None,
+        box_xyxy: tuple[float, float, float, float] | np.ndarray | None = None,
+        mask_logits: np.ndarray | None = None,
+        multimask: bool = True
+    ) -> list[MaskCandidate]:
+        """Predicción general combinando puntos (+/-), caja y logits de una máscara previa."""
         ...
 
     def predict_points(

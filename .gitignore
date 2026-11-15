@@ -39,3 +39,8 @@ test_app.py
 Thumbs.db
 .vscode/
 .idea/
+
+# Descargas parciales de pesos y artefactos de pruebas
+*.part
+*.gpkg
+.pytest_cache/

@@ -72,8 +72,10 @@ def test_geospatial_vectorization_and_metrics():
     # 100 px * 0.6 m = 60 m de lado -> Área esperada ~3600 m2
     assert area > 0, f"Área inválida: {area}"
     assert perim > 0, f"Perímetro inválido: {perim}"
-    assert gdf["confidence"].iloc[0] == 0.985
-    assert "MAGNA" in gdf["metric_crs"].iloc[0] or "3116" in gdf["metric_crs"].iloc[0] or "32618" in gdf["metric_crs"].iloc[0]
+    # El score de SAM 2 es IoU predicho (no probabilidad de clase): columna `pred_iou`
+    assert gdf["pred_iou"].iloc[0] == 0.985
+    assert gdf["metric_crs"].iloc[0] == "EPSG:9377"  # MAGNA-SIRGAS Origen-Nacional (Colombia)
+    assert abs(gdf["area_m2"].iloc[0] / gdf["area_geod_m2"].iloc[0] - 1) < 0.005
     print(f"  -> OK: Área calculada={area:.2f} m², Perímetro={perim:.2f} m, CRS={gdf['metric_crs'].iloc[0]}")
 
 def test_exporters():

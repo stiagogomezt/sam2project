@@ -47,3 +47,7 @@ En cumplimiento con la **Regla de Trabajo 7 (§0)** y la Sección 5.4 de la espe
   - Licencia: Open Database License (ODbL) 1.0. Atribución obligatoria: *"© OpenStreetMap contributors"*.
 - **Datos Abiertos Colombia (IGAC, IDECA, DANE, datos.gov.co):**
   - Licencia: Ley 1712 de 2014 / Datos Abiertos del Estado Colombiano (reutilización libre con citación de la entidad emisora).
+
+### Esri World Imagery (teselas de la ortofoto)
+- **Proveedor:** Esri (ArcGIS Online, servicio `World_Imagery/MapServer`).
+- **Uso:** sujeto a los términos de uso de Esri. La atribución se muestra en el mapa. Antes de usar o redistribuir derivados (GeoTIFF, datasets) fuera del ámbito académico, verifique las condiciones vigentes del servicio.

@@ -1,10 +1,20 @@
 """
 Módulo de visualización cartográfica e interactiva con Folium.
+
+v2: el mapa se divide en
+- un MAPA BASE estable (`create_base_map`): solo cambia al cargar otra ortofoto, de modo que
+  streamlit-folium no lo vuelve a renderizar y el usuario conserva zoom y encuadre;
+- CAPAS DINÁMICAS (`build_dynamic_layers`): objetos, candidata y prompts, que se envían con
+  `st_folium(..., feature_group_to_add=...)` sin reconstruir el mapa.
 """
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import folium
 import folium.plugins
 import geopandas as gpd
+
+from config import ESRI_IMAGERY_URL
+
+MAP_MAX_ZOOM = 21
 
 def create_geospatial_map(
     center: Tuple[float, float],
@@ -33,11 +43,10 @@ def create_geospatial_map(
     
     # Capa base Esri World Imagery
     esri_layer = folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        tiles=ESRI_IMAGERY_URL,
         attr="Esri World Imagery",
         name="Esri Satelital (Alta Resolución)",
         max_zoom=20,
-        subdomains=["server", "services"]
     )
     esri_layer.add_to(m)
     
@@ -97,3 +106,85 @@ def create_geospatial_map(
         
     folium.LayerControl(position="topright").add_to(m)
     return m
+
+
+def create_base_map(
+    center: Tuple[float, float],
+    zoom_start: int,
+    bounds_4326: Optional[Tuple[float, float, float, float]] = None,
+    native_zoom: Optional[int] = None,
+) -> folium.Map:
+    """Mapa base estable.
+
+    `native_zoom` = zoom de las teselas descargadas. Con `max_native_zoom`, Leaflet no pide teselas
+    más detalladas que las procesadas por SAM 2: al acercarse amplía ESAS MISMAS teselas, así que lo
+    que el usuario ve coincide con la imagen segmentada.
+    """
+    m = folium.Map(location=center, zoom_start=zoom_start, max_zoom=MAP_MAX_ZOOM,
+                   control_scale=True, tiles=None)
+    tile_kwargs: Dict[str, Any] = {"max_zoom": MAP_MAX_ZOOM}
+    if native_zoom is not None:
+        tile_kwargs["max_native_zoom"] = int(native_zoom)
+    folium.TileLayer(tiles=ESRI_IMAGERY_URL, attr="Esri World Imagery",
+                     name="Esri World Imagery", **tile_kwargs).add_to(m)
+    folium.plugins.MousePosition(position="bottomright", separator=" | Lon: ",
+                                 empty_string="", lng_first=False, num_digits=6, prefix="Lat: ").add_to(m)
+    if bounds_4326 is not None:
+        west, south, east, north = bounds_4326
+        folium.Rectangle(bounds=[[south, west], [north, east]], color="#FF3333", weight=2,
+                         dash_array="5, 5", fill=False, interactive=False).add_to(m)
+    return m
+
+
+def build_dynamic_layers(
+    objects: Sequence[Dict[str, Any]] = (),
+    candidate_gdf: Optional[gpd.GeoDataFrame] = None,
+    points_latlon: Sequence[Tuple[float, float, int]] = (),
+    box_latlon: Optional[Tuple[float, float, float, float]] = None,
+    pending_corner_latlon: Optional[Tuple[float, float]] = None,
+    highlight_id: Optional[str] = None,
+) -> List[folium.FeatureGroup]:
+    """Capas que cambian con la interacción.
+
+    `objects`: dicts con `gdf`, `color`, `object_id`, `label`, `status`.
+    Todas las geometrías se declaran `interactive=False` para que los clics atraviesen los polígonos
+    y lleguen al mapa (imprescindible para añadir puntos negativos DENTRO de una máscara).
+    """
+    fg_objects = folium.FeatureGroup(name="Objetos")
+    for o in objects:
+        gdf = o["gdf"]
+        if gdf is None or gdf.empty:
+            continue
+        color = o["color"]
+        dashed = o.get("status") == "propuesto"
+        weight = 4 if o["object_id"] == highlight_id else 2
+        folium.GeoJson(
+            gdf[["object_id", "label", "geometry"]].to_json(),
+            style_function=lambda _x, c=color, d=dashed, w=weight: {
+                "fillColor": c, "color": c, "weight": w, "fillOpacity": 0.25,
+                "dashArray": "6, 4" if d else None},
+            interactive=False,
+        ).add_to(fg_objects)
+
+    fg_edit = folium.FeatureGroup(name="Edición")
+    if candidate_gdf is not None and not candidate_gdf.empty:
+        folium.GeoJson(
+            candidate_gdf[["geometry"]].to_json(),
+            style_function=lambda _x: {"fillColor": "#00FFFF", "color": "#FFFFFF", "weight": 2,
+                                       "fillOpacity": 0.45},
+            interactive=False,
+        ).add_to(fg_edit)
+    if box_latlon is not None:
+        south, west, north, east = box_latlon
+        folium.Rectangle(bounds=[[south, west], [north, east]], color="#FFD600", weight=2,
+                         dash_array="4, 4", fill=False, interactive=False).add_to(fg_edit)
+    for lat, lon, lbl in points_latlon:
+        folium.CircleMarker(location=[lat, lon], radius=6, weight=2, color="#FFFFFF",
+                            fill=True, fill_opacity=1.0,
+                            fill_color="#00C853" if lbl == 1 else "#D50000",
+                            interactive=False).add_to(fg_edit)
+    if pending_corner_latlon is not None:
+        folium.CircleMarker(location=list(pending_corner_latlon), radius=5, color="#FFD600",
+                            fill=True, fill_color="#FFD600", fill_opacity=1.0,
+                            interactive=False).add_to(fg_edit)
+    return [fg_objects, fg_edit]
