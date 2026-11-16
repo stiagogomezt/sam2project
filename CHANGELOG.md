@@ -1,12 +1,14 @@
 # Registro de cambios
 
-## [2.1.0] — 2026-11-15 · Edificaciones compuestas, perímetro exterior y categorías
+## [2.1.0] — 2026-11-15 · Edificaciones compuestas, RemoteCLIP, rediseño GIS y carga de modelos
 
 Motivo: al segmentar un convento con un clic, SAM 2 tomaba solo una parte (nave o claustro) y el
-perímetro incluía los bordes de los patios. Además, el complejo quedaba cortado por el borde norte
-de la zona de estudio. Reproducido con la ortofoto real a zoom 19.
+perímetro incluía los bordes de los patios. Además, la interfaz requería jerarquía profesional SIG
+y control explícito con progreso real al descargar o cambiar modelos SAM 2 / SAM 2.1.
 
 ### Añadido
+- `src/ui.py` y `.streamlit/config.toml` (designoreado en `.gitignore`, ignorando solo `secrets.toml`): sistema de diseño GIS (petróleo/slate claro y oscuro), cabecera compacta, *stepper* horizontal de 5 etapas, ficha técnica de modelos, cuadrícula de 3 mini-indicadores y exportación agrupada en *Vectorial*, *Ráster* y *Dataset*.
+- Progreso y control de modelos (`src/sam_engine.py`, `config.py`): `ensure_checkpoint(..., progress_callback)` reporta MB descargados/totales; `GEOSAM_MAX_MODELS` (defecto `1`) controla `max_entries` en `@st.cache_resource`; protección en CPU para variantes *Large* (habilitable con GPU CUDA o `GEOSAM_ALLOW_LARGE_CPU=1`); medición de tiempos reales con `time.perf_counter()`.
 - `src/postprocess.py`: forma de la huella (rellenar patios, unir partes separadas, solo la parte
   principal, fragmentos mínimos) aplicada a la máscara, de modo que vector, máscara y exportaciones
   sigan siendo coherentes.
@@ -18,12 +20,13 @@ de la zona de estudio. Reproducido con la ortofoto real a zoom 19.
   zero-shot con RemoteCLIP** (`src/semantic.py`) y sugerencia en lote para objetos sin categoría.
   La fuente se registra en `label_source` ("usuario" o "RemoteCLIP (confirmada por el usuario)").
 - Consejo en el panel para edificaciones compuestas: caja + puntos.
-- Pruebas: `tests/unit/test_postprocess_and_merge.py`, `tests/integration/test_semantic_real.py` y la
-  E2E `test_composite_building_shape_and_category`.
+- Pruebas: `tests/unit/test_postprocess_and_merge.py`, `tests/unit/test_sam_engine_model_ux.py`,
+  `tests/integration/test_semantic_real.py` y E2E `test_composite_building_shape_and_category`.
 
 ### Cambiado
+- El cambio de modelo en el selector muestra su ficha técnica sin recargar el motor hasta pulsar **Cargar modelo** (`st.status` en lugar del bloqueo gris global de página).
+- Íconos Material (`:material/...:`) consistentes en botones, barra lateral y pestañas; miniaturas cuadradas uniformes de candidatas.
 - La etiqueta libre pasa a ser un selector "Categoría (la asigna usted; SAM 2 no clasifica)".
-- El texto del flujo de trabajo ya no se muestra como una lista de un solo elemento.
 - `requirements.txt`: se añade `open_clip_torch`.
 
 ## [2.0.0] — 2026-11-15 · Estabilización, multiobjeto y análisis geoespacial

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import streamlit as st
@@ -40,14 +40,63 @@ except ImportError as _e:  # pragma: no cover - depende del entorno
     _SAM2_ERROR = str(_e)
 
 
-def ensure_checkpoint(model_info: Dict[str, Any]) -> str:
+def max_models_in_ram() -> int:
+    """Lee `GEOSAM_MAX_MODELS` (por defecto 1 para Streamlit Cloud; >=2 en local con RAM suficiente)."""
+    raw = os.environ.get("GEOSAM_MAX_MODELS", "1")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+def cuda_is_available() -> bool:
+    """True si PyTorch está instalado y detecta una GPU CUDA activa."""
+    return bool(TORCH_AVAILABLE and torch is not None and torch.cuda.is_available())
+
+
+def allow_large_on_cpu() -> bool:
+    """True si el usuario habilitó explícitamente `GEOSAM_ALLOW_LARGE_CPU=1`."""
+    return os.environ.get("GEOSAM_ALLOW_LARGE_CPU", "0") == "1"
+
+
+def is_large_model(model_key: str) -> bool:
+    """True si la variante corresponde a un modelo Large (~856 MB)."""
+    info = SAM2_MODELS.get(model_key, {})
+    return bool(info.get("is_large") or "_large" in model_key)
+
+
+def can_load_model(model_key: str) -> tuple[bool, Optional[str]]:
+    """Valida si el modelo puede cargarse en el hardware actual sin bloquear la sesión."""
+    if is_large_model(model_key) and not cuda_is_available() and not allow_large_on_cpu():
+        return (
+            False,
+            "Las variantes Large (~856 MB, ~3.8 GB RAM) están deshabilitadas en CPU por defecto. "
+            "Requiere GPU CUDA o definir GEOSAM_ALLOW_LARGE_CPU=1.",
+        )
+    return True, None
+
+
+def is_checkpoint_downloaded(model_info: Dict[str, Any]) -> bool:
+    """True si el archivo `.pt` del checkpoint ya existe en disco y no está vacío."""
+    path = model_info.get("checkpoint", "")
+    return bool(path and os.path.exists(path) and os.path.getsize(path) > 0)
+
+
+def ensure_checkpoint(
+    model_info: Dict[str, Any],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> str:
     """Garantiza que el checkpoint exista localmente; lo descarga de forma atómica si falta.
 
     La descarga se escribe en `<ruta>.part` y solo se renombra si el tamaño coincide con el
     `Content-Length` del servidor, para que un corte de red no deje un `.pt` truncado.
+    Si se entrega `progress_callback`, se invoca con `(bytes_descargados, total_bytes)`.
     """
     path = model_info["checkpoint"]
     if os.path.exists(path) and os.path.getsize(path) > 0:
+        size = os.path.getsize(path)
+        if progress_callback is not None:
+            progress_callback(size, size)
         return path
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp_path = path + ".part"
@@ -55,12 +104,16 @@ def ensure_checkpoint(model_info: Dict[str, Any]) -> str:
     with urllib.request.urlopen(model_info["url"], timeout=60) as resp, open(tmp_path, "wb") as fh:
         expected = int(resp.headers.get("Content-Length") or 0)
         written = 0
+        if progress_callback is not None:
+            progress_callback(0, expected)
         while True:
-            chunk = resp.read(1 << 20)
+            chunk = resp.read(1 << 18)  # 256 KiB para progreso fluido en UI
             if not chunk:
                 break
             fh.write(chunk)
             written += len(chunk)
+            if progress_callback is not None:
+                progress_callback(written, expected)
     if expected and written != expected:
         os.remove(tmp_path)
         raise IOError(f"Descarga incompleta del checkpoint ({written} de {expected} bytes).")
@@ -77,6 +130,7 @@ class SAM2Engine:
         if allow_mock is None:
             allow_mock = os.environ.get("GEOSAM_DISABLE_MOCK", "0") != "1"
 
+        t0 = time.perf_counter()
         self.model_key = model_key
         self.model_info = SAM2_MODELS[model_key]
         self._last_emb: Optional[ImageEmbedding] = None  # solo para la API heredada
@@ -93,6 +147,7 @@ class SAM2Engine:
             self.device_name = "CPU (MODO SIMULADO — sin SAM 2)"
             self.backend = MockBackend(model_id=model_key)
             self.backend.load("cpu")
+            self.load_time = time.perf_counter() - t0
             return
 
         from geosam.backends.sam2 import SAM2Backend
@@ -110,7 +165,8 @@ class SAM2Engine:
             max_cache_entries=4,
         )
         self.backend.load(self.device)
-        print(f"SAM 2 inicializado en {self.device_name}.")
+        self.load_time = time.perf_counter() - t0
+        print(f"SAM 2 inicializado en {self.device_name} en {self.load_time:.2f} s.")
 
     @classmethod
     def from_backend(cls, backend, model_key: str, device_name: str = "CPU") -> "SAM2Engine":
@@ -125,6 +181,7 @@ class SAM2Engine:
         eng.mock_reason = "backend simulado inyectado" if eng.is_mock else None
         eng.device = getattr(backend, "device", "cpu")
         eng.device_name = device_name
+        eng.load_time = 0.0
         return eng
 
     # ------------------------------------------------------------------ API por sesión
@@ -132,9 +189,9 @@ class SAM2Engine:
         """Calcula (o recupera de caché) el embedding de la imagen. Devuelve (embedding, segundos)."""
         if image_array.ndim != 3 or image_array.shape[2] != 3 or image_array.dtype != np.uint8:
             raise ValueError("Se esperaba una imagen RGB uint8 de forma (H, W, 3).")
-        start = time.time()
+        start = time.perf_counter()
         emb = self.backend.embed(image_array)
-        return emb, time.time() - start
+        return emb, time.perf_counter() - start
 
     def is_compatible(self, emb: Optional[ImageEmbedding]) -> bool:
         """True si el embedding fue generado por este mismo modelo."""
@@ -156,7 +213,7 @@ class SAM2Engine:
         """
         if not self.is_compatible(emb):
             raise ValueError("El embedding no corresponde al modelo cargado; recalcúlelo.")
-        start = time.time()
+        start = time.perf_counter()
         candidates: List[MaskCandidate] = self.backend.predict(
             emb, pts_xy=points, labels=labels, box_xyxy=box, mask_logits=mask_logits, multimask=multimask
         )
@@ -165,16 +222,16 @@ class SAM2Engine:
             "candidates": candidates,
             "scores": scores,
             "best_idx": int(np.argmax(scores)) if scores else 0,
-            "inference_time": time.time() - start,
+            "inference_time": time.perf_counter() - start,
             "device": self.device_name,
             "multimask": multimask,
         }
 
     def segment_everything(self, image_array: np.ndarray, **kwargs: Any) -> tuple[List[MaskCandidate], float]:
         """Generación automática de máscaras (SAM2AutomaticMaskGenerator). Costosa en CPU."""
-        start = time.time()
+        start = time.perf_counter()
         res = self.backend.segment_everything(image_array, **kwargs)
-        return res, time.time() - start
+        return res, time.perf_counter() - start
 
     # ------------------------------------------------------------------ API heredada (v1)
     def set_image(self, image_array: np.ndarray, image_id: Optional[str] = None) -> float:
@@ -202,7 +259,11 @@ class SAM2Engine:
         }
 
 
-@st.cache_resource(show_spinner="Inicializando modelo SAM 2 en memoria...", max_entries=1)
+@st.cache_resource(show_spinner=False, max_entries=max_models_in_ram())
 def get_sam2_engine(model_key: str = DEFAULT_SAM2_MODEL_KEY) -> SAM2Engine:
-    """Carga y comparte los pesos del modelo. `max_entries=1` libera el modelo anterior al cambiar."""
+    """Carga y comparte los pesos del modelo en RAM (`GEOSAM_MAX_MODELS`, por defecto 1).
+
+    `show_spinner=False` evita bloquear toda la página con un overlay gris; la interfaz muestra
+    progreso explícito mediante `st.status`.
+    """
     return SAM2Engine(model_key=model_key)

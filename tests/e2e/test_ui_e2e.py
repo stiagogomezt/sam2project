@@ -60,12 +60,15 @@ def browser():
 
 
 def map_frame(page):
-    for f in page.frames:
-        try:
-            if f.query_selector(".leaflet-container"):
-                return f
-        except Exception:
-            pass
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        for f in page.frames:
+            try:
+                if f.query_selector(".leaflet-container"):
+                    return f
+            except Exception:
+                pass
+        page.wait_for_timeout(300)
     raise AssertionError("No se encontró el mapa Leaflet")
 
 
@@ -103,7 +106,7 @@ def no_exceptions(page):
 def load_orthophoto(browser, url):
     page = browser.new_page(viewport={"width": 1600, "height": 1300}, accept_downloads=True)
     page.goto(url, wait_until="networkidle")
-    page.get_by_role("button", name="Descargar y cargar ortofoto").click()
+    page.get_by_role("button", name="Descargar y cargar ortofoto").click(timeout=120000)
     page.wait_for_selector("text=Herramienta de prompt", timeout=180000)
     wait_idle(page); page.wait_for_timeout(2000)
     no_exceptions(page)
@@ -122,7 +125,7 @@ def set_category(page, label):
 def accept(page, label=None):
     if label:
         set_category(page, label)
-    page.get_by_role("button", name="✅ Aceptar objeto").click()
+    page.get_by_role("button", name="Aceptar objeto").click()
     wait_idle(page); page.wait_for_timeout(1000)
     no_exceptions(page)
 
@@ -138,19 +141,19 @@ def test_prompts_zoom_and_discard(browser, app_url):
     page.wait_for_selector("text=Candidatas de SAM 2", timeout=60000); wait_idle(page)
     no_exceptions(page)
     assert leaflet_zoom(page) == zoom, "El mapa perdió el zoom tras el clic"
-    assert page.get_by_text(re.compile(r"^\d · IoU pred\.")).count() == 3
+    assert page.get_by_text(re.compile(r"^(?:✓ )?\d · IoU pred\.")).count() == 3
 
     page.locator("button", has_text="Excluir").first.click(); wait_idle(page)
     click_map(page, 6, 6); wait_idle(page)            # clic DENTRO de la máscara
     assert "➖ 1" in page.inner_text("body")
-    page.get_by_role("button", name="↩️ Deshacer").click(); wait_idle(page)
+    page.get_by_role("button", name="Deshacer").click(); wait_idle(page)
     assert "➖ 0" in page.inner_text("body")
     accept(page, "zona verde")
     assert "Objetos (1)" in page.get_by_role("tab").first.inner_text()
 
     page.locator("button", has_text="Incluir").first.click(); wait_idle(page)
     click_map(page, -120, -80); wait_idle(page); page.wait_for_timeout(800)
-    page.get_by_role("button", name="🗑️ Descartar").click(); wait_idle(page)
+    page.get_by_role("button", name="Descartar").click(); wait_idle(page)
     page.get_by_role("tab", name="Estadísticas").click(); wait_idle(page); page.wait_for_timeout(1000)
     body = page.inner_text("body")
     assert "➕ 0" in body and "Candidatas de SAM 2" not in body, "El clic descartado se volvió a disparar"
@@ -184,7 +187,7 @@ def test_catalog_refine_visibility_and_exports(browser, app_url):
     no_exceptions(page)
 
     # Refinar el objeto seleccionado → versión 2
-    page.get_by_role("button", name="✏️ Refinar").click(); wait_idle(page)
+    page.get_by_role("button", name=re.compile(r"Refinar$")).click(); wait_idle(page)
     assert "Refinando OBJ-" in page.inner_text("body")
     page.locator("button", has_text="Incluir").first.click(); wait_idle(page)
     click_map(page, 30, 30); wait_idle(page)
@@ -224,17 +227,19 @@ def test_model_switch_and_automatic(browser, app_url):
     page = load_orthophoto(browser, app_url)
     page.locator("[data-testid='stSidebar'] [data-testid='stSelectbox']").first.click()
     page.get_by_role("option", name="SAM 2 Tiny (versión 072824)").click()
+    wait_idle(page); page.wait_for_timeout(400)
+    page.get_by_role("button", name="Cargar modelo").click()
     wait_idle(page, 240); page.wait_for_timeout(1500)
     no_exceptions(page)
     click_map(page, -150, 100)
     page.wait_for_selector("text=IoU predicho", timeout=60000); wait_idle(page)
     no_exceptions(page)
-    page.get_by_role("button", name="🗑️ Descartar").click(); wait_idle(page)
+    page.get_by_role("button", name="Descartar").click(); wait_idle(page)
 
     page.get_by_role("tab", name="Segmentación automática").click(); wait_idle(page)
     page.locator("[role='tabpanel']:visible [data-testid='stSelectbox']").first.click()
     page.get_by_role("option", name="8", exact=True).click(); wait_idle(page)
-    page.get_by_role("button", name="🤖 Ejecutar segmentación automática").click()
+    page.get_by_role("button", name="Ejecutar segmentación automática").click()
     wait_idle(page, 400); page.wait_for_timeout(1000)
     no_exceptions(page)
     n = int(page.get_by_role("tab").first.inner_text().split("(")[1].rstrip(")"))
@@ -246,14 +251,17 @@ def test_composite_building_shape_and_category(browser, app_url):
     """Caja + puntos sobre una edificación compuesta, patios rellenados y categoría sugerida."""
     page = load_orthophoto(browser, app_url)
     page.locator("button", has_text="Caja (2 clics)").first.click(); wait_idle(page)
-    click_map(page, -160, -140); click_map(page, 40, 20)
+    click_map(page, -160, -140); wait_idle(page)
+    click_map(page, 40, 20); wait_idle(page)
     page.locator("button", has_text="Incluir").first.click(); wait_idle(page)
-    click_map(page, -60, -60)
+    click_map(page, -60, -60); wait_idle(page)
     page.wait_for_selector("text=Perímetro exterior", timeout=60000)
-    cb = page.get_by_role("checkbox", name="Rellenar patios y huecos interiores")
-    if not cb.is_visible():
+    box = page.locator("[data-testid='stCheckbox']").filter(has_text="Rellenar patios y huecos interiores").first
+    if not box.is_visible():
         page.get_by_text("Forma de la huella").click(); wait_idle(page)
-    cb.check(force=True); wait_idle(page)
+    box.scroll_into_view_if_needed()
+    if not box.locator("input").is_checked():
+        box.locator("label").click(); wait_idle(page)
     no_exceptions(page)
     # el rerun que provoca la casilla puede tardar: esperar a que desaparezcan los huecos
     deadline = time.time() + 20
@@ -263,7 +271,7 @@ def test_composite_building_shape_and_category(browser, app_url):
             break
         page.wait_for_timeout(500)
     assert "0 hueco(s)" in body or "hueco(s)" not in body
-    btn = page.get_by_role("button", name="✨ Sugerir categoría (RemoteCLIP)")
+    btn = page.get_by_role("button", name="Sugerir categoría (RemoteCLIP)")
     if btn.is_enabled():
         btn.click(); wait_idle(page, 300)
         no_exceptions(page)

@@ -40,38 +40,62 @@ SAM2_MODELS = {
         "name": "SAM 2.1 Tiny (Rápido - Recomendado CPU)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2.1_hiera_tiny.pt"),
         "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt",
+        "size_mb": 149,
+        "ram_gb": 1.4,
+        "embed_s_cpu": "~2–5 s",
+        "is_large": False,
     },
     "sam2.1_hiera_small": {
         "name": "SAM 2.1 Small (Equilibrado)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2.1_hiera_small.pt"),
         "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt",
+        "size_mb": 176,
+        "ram_gb": 1.8,
+        "embed_s_cpu": "~4–9 s",
+        "is_large": False,
     },
     "sam2.1_hiera_large": {
         "name": "SAM 2.1 Large (Máxima precisión - Requiere GPU)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2.1_hiera_large.pt"),
         "config": "configs/sam2.1/sam2.1_hiera_l.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt",
+        "size_mb": 856,
+        "ram_gb": 3.8,
+        "embed_s_cpu": "~20–45 s",
+        "is_large": True,
     },
     # SAM 2 (072824): versión original, conservada por compatibilidad.
     "sam2_hiera_tiny": {
         "name": "SAM 2 Tiny (versión 072824)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2_hiera_tiny.pt"),
         "config": "configs/sam2/sam2_hiera_t.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt",
+        "size_mb": 149,
+        "ram_gb": 1.4,
+        "embed_s_cpu": "~2–5 s",
+        "is_large": False,
     },
     "sam2_hiera_small": {
         "name": "SAM 2 Small (versión 072824)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2_hiera_small.pt"),
         "config": "configs/sam2/sam2_hiera_s.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt",
+        "size_mb": 176,
+        "ram_gb": 1.8,
+        "embed_s_cpu": "~4–9 s",
+        "is_large": False,
     },
     "sam2_hiera_large": {
         "name": "SAM 2 Large (versión 072824)",
         "checkpoint": str(CHECKPOINT_DIR / "sam2_hiera_large.pt"),
         "config": "configs/sam2/sam2_hiera_l.yaml",
-        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
+        "url": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt",
+        "size_mb": 856,
+        "ram_gb": 3.8,
+        "embed_s_cpu": "~20–45 s",
+        "is_large": True,
     },
 }
 

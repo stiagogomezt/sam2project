@@ -128,13 +128,14 @@ def test_catalog_lifecycle_and_exports():
     assert "cent_lat" in back.columns and "perim_m" in back.columns and len(back) == 2
 
     # GeoPackage multicapa legible
-    with tempfile.NamedTemporaryFile(suffix=".gpkg") as f:
-        f.write(export_geopackage({"objetos": gdf, "vacia": gdf.iloc[0:0]}))
-        f.flush()
+    with tempfile.TemporaryDirectory() as d:
+        gpkg_path = os.path.join(d, "test_catalog.gpkg")
+        with open(gpkg_path, "wb") as f:
+            f.write(export_geopackage({"objetos": gdf, "vacia": gdf.iloc[0:0]}))
         import pyogrio
-        layers = [lyr[0] for lyr in pyogrio.list_layers(f.name)]
+        layers = [lyr[0] for lyr in pyogrio.list_layers(gpkg_path)]
         assert layers == ["objetos"]
-        assert len(gpd.read_file(f.name, layer="objetos")) == 2
+        assert len(gpd.read_file(gpkg_path, layer="objetos")) == 2
 
     # Ráster de etiquetas
     objs = cat.filter(["aceptado"])

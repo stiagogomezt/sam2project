@@ -126,6 +126,8 @@ Se descargan solos la primera vez (escritura atómica y verificación de tamaño
 
 Variables de entorno opcionales:
 - `SAM2_CHECKPOINT_DIR`: carpeta donde guardar o buscar los `.pt` (por defecto, la raíz del proyecto).
+- `GEOSAM_MAX_MODELS`: número máximo de modelos SAM 2 retenidos simultáneamente en RAM por `@st.cache_resource` (por defecto `1` para Streamlit Community Cloud; en local con ≥8 GB de RAM puede subirse a `2`; Tiny ≈1,4 GB, Small ≈1,8 GB, Large ≈3,8 GB por entrada).
+- `GEOSAM_ALLOW_LARGE_CPU`: definir como `1` para habilitar manualmente variantes *Large* (~856 MB) sin GPU CUDA (deshabilitadas en CPU por defecto).
 - `GEOSAM_DISABLE_MOCK=1`: si torch o sam2 faltan, falla en lugar de entrar en modo simulado.
 - `REMOTECLIP_DIR`: carpeta del checkpoint `RemoteCLIP-ViT-B-32.pt` (605 MB; se descarga la primera vez que se pide una sugerencia).
 - `GEOSAM_DISABLE_SEMANTIC=1`: oculta la sugerencia de categorías (por ejemplo, para ahorrar RAM).

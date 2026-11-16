@@ -12,7 +12,8 @@ Leyenda de evidencia: **U** prueba unitaria · **I** integración con SAM 2 real
 | Embeddings por sesión (sin cruce entre usuarios) + lock | `src/sam_engine.py`, `geosam/backends/sam2.py` | I `test_sessions_do_not_overwrite_each_other` (falla con el código anterior, pasa con el nuevo) |
 | `SAM2Backend` corregido (antes devolvía máscaras del 100 % de la imagen) | `geosam/backends/sam2.py` | I `test_point_prompt_segments_known_object` |
 | Cambio de modelo con imagen cargada (recalcula el embedding; antes fallaba) | `app.py`, `src/sam_engine.py` | I `test_embedding_from_other_model_is_rejected`, E `test_model_switch_and_automatic` |
-| Un solo modelo en RAM (`cache_resource(max_entries=1)`) | `src/sam_engine.py` | M |
+| Un solo modelo en RAM por defecto (`GEOSAM_MAX_MODELS`, default `1`) + bloqueo `Large` en CPU (`GEOSAM_ALLOW_LARGE_CPU`) | `src/sam_engine.py`, `app.py` | U (`test_sam_engine_model_ux.py`), M |
+| Carga explícita de modelo (`Cargar modelo`), ficha técnica, progreso por pasos (`st.status`) y rediseño GIS (`src/ui.py`) | `app.py`, `src/sam_engine.py`, `src/ui.py` | U, E (`test_model_switch_and_automatic`) |
 | Aviso rojo permanente en modo simulado + `backend` registrado por objeto | `app.py`, `src/objects.py` | U |
 | Descarga atómica de pesos con verificación de tamaño | `src/sam_engine.py` | M (descarga real de 2 checkpoints) |
 | SAM 2.1 (Tiny/Small/Large) además de SAM 2 | `config.py` | I (ambas versiones Tiny) |
