@@ -279,3 +279,33 @@ def test_composite_building_shape_and_category(browser, app_url):
             return
     accept(page, "Edificación religiosa")
     page.close()
+
+
+def test_products_tab(browser, app_url):
+    """Productos con un catálogo mínimo: sin excepciones, aviso de muestras insuficientes y descargas."""
+    page = load_orthophoto(browser, app_url)
+    for dx, dy, lab in [(0, 0, "Zona verde"), (150, 120, "Cubierta de teja")]:
+        map_frame(page).frame_element().scroll_into_view_if_needed()
+        click_map(page, dx, dy)
+        page.wait_for_selector("text=IoU predicho", timeout=60000); wait_idle(page)
+        accept(page, lab)
+    page.get_by_role("tab", name="Productos").click(); wait_idle(page)
+    no_exceptions(page)
+    assert page.get_by_text("Para entrenar necesita al menos", exact=False).count() > 0
+    assert page.get_by_role("button", name="🎓 Entrenar y validar").is_disabled()
+    for name in ["Mapa de coberturas", "Coordenadas y linderos", "Indicadores e informe"]:
+        page.locator("button", has_text=name).first.click(); wait_idle(page, 120)
+        no_exceptions(page)
+    out = Path(tempfile.mkdtemp())
+    btn = page.locator("[data-testid='stDownloadButton'] button", has_text="Informe técnico").first
+    with page.expect_download(timeout=60000) as dl:
+        btn.click()
+    html = dl.value.path().read_text(encoding="utf-8")
+    assert "Índice de ocupación" in html and "Inventario de objetos" in html
+    page.locator("button", has_text="Coordenadas y linderos").first.click(); wait_idle(page)
+    btn = page.locator("[data-testid='stDownloadButton'] button", has_text="Cuadro de coordenadas").first
+    with page.expect_download(timeout=60000) as dl:
+        btn.click()
+    first = dl.value.path().read_text(encoding="utf-8").splitlines()[0]
+    assert first.startswith("vertice,este_x,norte_y,lindero,distancia_m,acimut_deg")
+    page.close()

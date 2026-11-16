@@ -52,6 +52,16 @@ GeoJSON, GeoPackage multicapa, Shapefile con nombres legibles, CSV, GeoTIFF de l
 | Categorías + sugerencia RemoteCLIP (individual y en lote) | I `test_semantic_real.py`, E `test_composite_building_shape_and_category` |
 | Convento completo en la app (caja + 5 puntos + patios, Large) | E manual: 1 parte, IoU pred. 0,936, ≈15 340 m², perím. ext. ≈698 m |
 
+### v2.2 — Productos
+| Producto | Evidencia |
+|---|---|
+| Clasificación supervisada + validación | U `test_supervised_classifier_fit_predict_and_cv`; M 71 objetos reales (≈83 %, κ≈0,77); E flujo completo (12 muestras → automática → clasificación) |
+| Coberturas (GeoTIFF con paleta + estadísticas) | U, E |
+| Cuadro de coordenadas y linderos (9377) | U (cuadrado de 20 m: distancias, acimutes, orden), E |
+| Indicadores de zona y por unidad | U, E (capa de 4 manzanas) |
+| Informe técnico HTML | E `test_products_tab` |
+| DXF / KML | U (relectura con GDAL), E |
+
 ## Pendiente
 
 | Elemento | Situación | Siguiente paso |
@@ -61,6 +71,7 @@ GeoJSON, GeoPackage multicapa, Shapefile con nombres legibles, CSV, GeoTIFF de l
 | CLI `cli/main.py` | Comandos declarados que solo imprimen texto | Conectar con `src/` y `geosam/` |
 | `src/classifier.py` | No conectado: necesita banda NIR (4 bandas) y Esri entrega RGB. La clasificación sobre RGB la cubre ahora `src/semantic.py` (sugerencias) | Clasificador supervisado entrenado con el dataset COCO exportado |
 | SAM 3 (`geosam/backends/sam3.py`) | Esqueleto | Integrar cuando haya checkpoint y licencia verificados |
+| Persistir el modelo supervisado entre sesiones | El modelo vive en la sesión | Guardar pesos y normalización en JSON junto al proyecto |
 | Fase 6: multitemporal, detección de cambios, propagación/tracking, fine-tuning | No implementado | Ver la propuesta de diseño abajo |
 | Caché de embeddings en disco | `EmbeddingCache.cache_dir` declarado pero sin implementar | Serializar `_features` con `torch.save` por hash |
 

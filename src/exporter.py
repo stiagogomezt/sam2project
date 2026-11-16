@@ -216,3 +216,58 @@ def export_coco_dataset(
         zf.writestr("annotations/instances.json", json.dumps(coco, ensure_ascii=False, indent=1))
         zf.writestr("georreferencia.json", json.dumps(georef, indent=2))
     return buf.getvalue()
+
+
+def export_dxf(gdf: gpd.GeoDataFrame, metric_crs: str = "EPSG:9377") -> bytes:
+    """DXF para CAD, en coordenadas métricas (por defecto EPSG:9377). Una capa CAD por categoría.
+
+    El formato DXF de GDAL solo admite campos fijos: la categoría va en `Layer`. Los nombres de
+    capa se escriben en ASCII (sin tildes) porque la cabecera DXF declara una página de códigos ANSI
+    y los caracteres UTF-8 aparecerían corruptos en AutoCAD."""
+    import unicodedata
+
+    if gdf.empty:
+        raise ValueError("No hay objetos para exportar.")
+    g = gdf.to_crs(metric_crs)
+
+    def _ascii(t: str) -> str:
+        t = unicodedata.normalize("NFKD", str(t)).encode("ascii", "ignore").decode("ascii")
+        return "".join(ch if ch.isalnum() or ch in " _-" else "_" for ch in t).strip() or "objeto"
+
+    out = gpd.GeoDataFrame({"Layer": g["label"].map(_ascii), "geometry": g.geometry}, crs=metric_crs)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "objetos.dxf")
+        out.to_file(path, driver="DXF")
+        with open(path, "rb") as fh:
+            return fh.read()
+
+
+def export_kml(gdf: gpd.GeoDataFrame) -> bytes:
+    """KML para Google Earth (EPSG:4326); nombre = id · categoría; atributos como datos extendidos."""
+    if gdf.empty:
+        raise ValueError("No hay objetos para exportar.")
+    g = gdf.to_crs(CRS_GEOGRAPHIC).copy()
+    g.insert(0, "Name", g["object_id"].astype(str) + " · " + g["label"].astype(str))
+    keep = ["Name", "label", "area_m2", "perimeter_ext_m", "pred_iou", "status", "geometry"]
+    g = g[[c for c in keep if c in g.columns]]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "objetos.kml")
+        g.to_file(path, driver="KML")
+        with open(path, "rb") as fh:
+            return fh.read()
+
+
+def export_coverage_geotiff(raster: np.ndarray, legend: Dict[int, str], colors: Dict[int, tuple],
+                            transform: rasterio.Affine, crs_str: str = CRS_WEB_MERCATOR) -> bytes:
+    """Ráster de coberturas uint8 con paleta de colores y leyenda en los metadatos."""
+    h, w = raster.shape
+    memfile = MemoryFile()
+    with memfile.open(driver="GTiff", height=h, width=w, count=1, dtype=np.uint8, crs=crs_str,
+                      transform=transform, compress="deflate", nodata=0) as dst:
+        dst.write(raster.astype(np.uint8), 1)
+        cmap = {0: (245, 245, 245, 0)}
+        cmap.update({k: tuple(v) + (255,) for k, v in colors.items()})
+        dst.write_colormap(1, cmap)
+        dst.update_tags(**{f"clase_{k}": v for k, v in legend.items()}, clase_0="Sin clasificar")
+        dst.set_band_description(1, "cobertura")
+    return memfile.read()

@@ -101,13 +101,20 @@ class SemanticClassifier:
         import gc
         gc.collect()
 
-    def classify(self, crop_rgb: np.ndarray, top_k: int = 3) -> List[Tuple[str, float]]:
+    def embed(self, crop_rgb: np.ndarray) -> np.ndarray:
+        """Embedding visual normalizado (512 valores) del recorte: descriptor para la
+        clasificación supervisada."""
         from PIL import Image
 
         x = self.preprocess(Image.fromarray(np.ascontiguousarray(crop_rgb))).unsqueeze(0)
         with self._torch.no_grad():
             ie = self.model.encode_image(x)
             ie = ie / ie.norm(dim=-1, keepdim=True)
+        return ie[0].numpy().astype(np.float32)
+
+    def classify(self, crop_rgb: np.ndarray, top_k: int = 3) -> List[Tuple[str, float]]:
+        ie = self._torch.from_numpy(self.embed(crop_rgb))[None]
+        with self._torch.no_grad():
             p = (100.0 * ie @ self._text.T).softmax(dim=-1)[0].numpy()
         scores: Dict[str, float] = {}
         for owner, prob in zip(self._owners, p):

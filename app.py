@@ -32,11 +32,19 @@ from src.interactive import InteractiveSegmenter
 from src.postprocess import refine_mask, touches_border
 from src.semantic import CATEGORIES, REMOTECLIP_INFO, SemanticClassifier, classifier_available, object_crop
 from src.sam_engine import ensure_checkpoint
+import geopandas as gpd
+from src.products import (
+    SupervisedClassifier, color_stats, handcrafted_features, training_eligible, coverage_raster,
+    coverage_stats, coverage_rgb, category_color, mosaic_pixel_area_m2, vertex_table, azimuth_to_dms,
+    zone_indicators, units_indicators, is_built, technical_report_html, UNLABELED, SHAPE_KEYS, COLOR_KEYS,
+)
+SHAPE_AND_COLOR = SHAPE_KEYS + COLOR_KEYS
 from src.objects import ObjectCatalog, STATUSES
 from src.visualization import create_base_map, build_dynamic_layers
 from src.exporter import (
     export_geojson, export_geotiff, export_png, export_shapefile_zip, export_csv,
-    export_geopackage, export_label_geotiff, export_coco_dataset,
+    export_geopackage, export_label_geotiff, export_coco_dataset, export_dxf, export_kml,
+    export_coverage_geotiff,
 )
 
 st.set_page_config(
@@ -86,6 +94,9 @@ _DEFAULTS = {
     "label_default": "Sin categoría",
     "suggestions": None,        # (clave de candidata, [(categoría, prob), ...]) de RemoteCLIP
     "suggested_pick": None,     # categoría sugerida que el usuario adoptó
+    "feat_cache": {},           # descriptores por (object_id, versión, con_clip)
+    "sup_model": None,          # (SupervisedClassifier, con_clip)
+    "sup_cv": None,             # resultado de validación cruzada
     "cand_cache": None,
 }
 for _k, _v in _DEFAULTS.items():
@@ -555,9 +566,9 @@ with col_panel:
 # =============================================================================
 if mosaic_loaded:
     st.markdown("---")
-    tab_obj, tab_det, tab_stats, tab_rel, tab_exp, tab_auto = st.tabs([
+    tab_obj, tab_det, tab_stats, tab_rel, tab_prod, tab_exp, tab_auto = st.tabs([
         f"🗂️ Objetos ({len(catalog)})", "📐 Detalle y métricas", "📊 Estadísticas",
-        "🔗 Relaciones espaciales", "💾 Exportar", "🤖 Segmentación automática",
+        "🔗 Relaciones espaciales", "🧩 Productos", "💾 Exportar", "🤖 Segmentación automática",
     ])
 
     # ---- 9. Administración ----------------------------------------------------
@@ -575,10 +586,16 @@ if mosaic_loaded:
                     fields = {k: v for k, v in changes.items() if k in ("label", "status", "ver")}
                     if "ver" in fields:
                         fields["visible"] = bool(fields.pop("ver"))
+                    oid = ids[int(row_idx)]
                     if "label" in fields:
-                        fields["label"] = str(fields["label"]).strip() or "objeto"
+                        fields["label"] = str(fields["label"]).strip() or "Sin categoría"
+                        fields["label_source"] = "usuario"  # editada a mano: muestra confirmada
+                    elif fields.get("status") == "aceptado" and "sin confirmar" in catalog.get(oid).label_source:
+                        # aceptar un objeto con categoría propuesta equivale a confirmarla
+                        src = catalog.get(oid).label_source.split(" ")[0]
+                        fields["label_source"] = f"{src} (confirmada por el usuario)"
                     if fields:
-                        catalog.update(ids[int(row_idx)], **fields)
+                        catalog.update(oid, **fields)
 
             st.data_editor(
                 table, key=editor_key, on_change=_apply_edits, hide_index=True, width="stretch",
@@ -694,6 +711,8 @@ if mosaic_loaded:
                 ("Partes / huecos", f"{r['n_parts']} / {r['n_holes']}", "—"),
                 ("Centroide (lat, lon)", f"{r['centroid_lat']:.7f}, {r['centroid_lon']:.7f}", "°"),
                 ("Bounding box (O, S, E, N)", f"{r['min_lon']:.6f}, {r['min_lat']:.6f}, {r['max_lon']:.6f}, {r['max_lat']:.6f}", "°"),
+                ("Color dominante (cubierta/superficie)",
+                 color_stats(mosaic["img_array"], obj.mask())["color_dominante"], ""),
                 ("CRS métrico", r["metric_crs"], ""),
                 ("Modelo / backend", f"{obj.model_id} / {obj.backend}", ""),
                 ("Origen", obj.origin, ""),
@@ -747,6 +766,233 @@ if mosaic_loaded:
             st.caption("Distancias euclidianas en el CRS métrico (EPSG:9377 o UTM); "
                        "relación según el modelo topológico DE-9IM (shapely).")
 
+
+    # ---- Productos ---------------------------------------------------------------
+    with tab_prod:
+        prod = st.segmented_control(
+            "Producto", ["sup", "cov", "coord", "ind"], default="sup", key="product_sel",
+            format_func={"sup": "🎓 Clasificación supervisada", "cov": "🗺️ Mapa de coberturas",
+                         "coord": "📍 Coordenadas y linderos", "ind": "🏙️ Indicadores e informe"}.get) or "sup"
+        T = mosaic["transform_3857"]
+        img = mosaic["img_array"]
+
+        def _features(o, use_clip):
+            key = (o.object_id, o.version, use_clip)
+            fc = st.session_state.feat_cache
+            if key not in fc:
+                mk = o.mask()
+                v = handcrafted_features(o.attributes(), color_stats(img, mk))
+                if use_clip:
+                    v = np.concatenate([v, get_semantic_classifier().embed(object_crop(img, o.bbox_px))])
+                fc[key] = v
+            return fc[key]
+
+        if prod == "sup":
+            st.markdown(
+                "Clasificación **supervisada orientada a objetos (GEOBIA)**: SAM 2 produce los segmentos, sus "
+                "categorías confirmadas son las **muestras de entrenamiento** y una regresión logística multinomial "
+                "aprende de descriptores de **forma** y **color** (y opcionalmente del embedding de RemoteCLIP) para "
+                "clasificar el resto (p. ej. los objetos propuestos por la segmentación automática).")
+            train = [o for o in catalog if training_eligible(o.label, o.status, o.label_source)]
+            counts = pd.Series([o.label for o in train], dtype=object).value_counts()
+            targets = [o for o in catalog if not training_eligible(o.label, o.status, o.label_source)
+                       and o.status != "rechazado"]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Muestras de entrenamiento", len(train))
+            c2.metric("Categorías", len(counts))
+            c3.metric("Objetos por clasificar", len(targets))
+            if len(counts):
+                st.dataframe(counts.rename_axis("Categoría").reset_index(name="Muestras"), hide_index=True,
+                             width="stretch")
+            ok_sem, _why = classifier_available()
+            use_clip = st.checkbox("Añadir descriptores de RemoteCLIP", value=False, disabled=not ok_sem,
+                                   help="En la prueba con 71 objetos reales no mejoró la exactitud frente a forma + color "
+                                        "y descarga 605 MB; útil con más muestras.")
+            ready = len(counts) >= 2 and counts.min() >= 3
+            if not ready:
+                st.info("Para entrenar necesita al menos **2 categorías con 3 o más objetos aceptados** cada una "
+                        "(recomendado: 10 o más por categoría). Edite la categoría y el estado en la pestaña Objetos; "
+                        "las categorías *sin confirmar* no cuentan como muestras.")
+            b1, b2 = st.columns(2)
+            if b1.button("🎓 Entrenar y validar", type="primary", width="stretch", disabled=not ready):
+                with st.spinner("Calculando descriptores y validando..."):
+                    X = np.stack([_features(o, use_clip) for o in train])
+                    y = np.array([o.label for o in train])
+                    st.session_state.sup_cv = SupervisedClassifier.cross_validate(X, y)
+                    st.session_state.sup_model = (SupervisedClassifier().fit(X, y), use_clip)
+                st.rerun()
+            cv = st.session_state.sup_cv
+            if cv is not None:
+                v1, v2, v3 = st.columns(3)
+                v1.metric("Exactitud global", f"{cv['exactitud']:.1%}")
+                v2.metric("Índice kappa", f"{cv['kappa']:.3f}", help="Acuerdo corregido por azar: >0,6 sustancial, >0,8 casi perfecto.")
+                v3.metric("Muestras validadas", cv["n"])
+                st.caption(f"Método: {cv['metodo']}. Medido con objetos no vistos por el modelo en cada pliegue.")
+                st.dataframe(cv["por_clase"].rename(columns={"categoria": "Categoría", "muestras": "Muestras",
+                             "precision": "Precisión", "exhaustividad": "Exhaustividad", "f1": "F1"}),
+                             hide_index=True, width="stretch")
+                with st.expander("Matriz de confusión (filas = real, columnas = predicha)"):
+                    st.dataframe(cv["matriz_confusion"], width="stretch")
+            model = st.session_state.sup_model
+            min_p = st.slider("Probabilidad mínima para asignar categoría", 0.3, 0.95, 0.6, 0.05)
+            if b2.button(f"🏷️ Clasificar {len(targets)} objeto(s)", width="stretch",
+                         disabled=model is None or not targets):
+                clf, with_clip = model
+                with st.spinner("Clasificando..."):
+                    X = np.stack([_features(o, with_clip) for o in targets])
+                    n_ok = 0
+                    for o, (cat, p) in zip(targets, clf.predict(X)):
+                        if p >= min_p:
+                            catalog.update(o.object_id, label=cat, label_source=f"Supervisada {p:.0%} (sin confirmar)")
+                            n_ok += 1
+                        else:
+                            catalog.update(o.object_id, label="Sin categoría",
+                                           label_source=f"Supervisada: confianza baja ({p:.0%})")
+                st.toast(f"{n_ok} objetos clasificados; revíselos y acéptelos en la pestaña Objetos.", icon="🏷️")
+                st.rerun()
+            if train:
+                feats = pd.DataFrame([{"object_id": o.object_id, "categoria": o.label,
+                                       **dict(zip(SHAPE_AND_COLOR, _features(o, False)))} for o in train])
+                st.download_button(on_click="ignore", label="⬇️ Muestras de entrenamiento (CSV)",
+                                   data=feats.to_csv(index=False).encode("utf-8"), file_name="muestras_entrenamiento.csv",
+                                   mime="text/csv")
+
+        elif prod == "cov":
+            st.markdown("Mapa temático de **coberturas** a partir de las categorías de los objetos "
+                        "(lo no segmentado queda *Sin clasificar*).")
+            incl = st.multiselect("Estados incluidos", list(STATUSES), default=["aceptado", "propuesto"],
+                                  format_func=lambda s_: STATUS_LABELS[s_], key="cov_status")
+            objs_c = [o for o in catalog.filter(incl) if o.label not in UNLABELED]
+            objs_c.sort(key=lambda o: (o.status == "aceptado", -o.pixel_count))  # grandes primero, aceptados encima
+            if not objs_c:
+                st.caption("No hay objetos con categoría en los estados elegidos.")
+            else:
+                raster, legend = coverage_raster([(o.mask(), o.label) for o in objs_c], img.shape[:2])
+                px_area, zone_area, crs_m = mosaic_pixel_area_m2(T, mosaic["width"], mosaic["height"])
+                stats_c = coverage_stats(raster, legend, px_area)
+                cc1, cc2 = st.columns([3, 2])
+                rgb = coverage_rgb(raster, legend)
+                cc1.image((0.55 * rgb + 0.45 * img).astype(np.uint8), caption="Coberturas sobre la ortofoto",
+                          width="stretch")
+                leg = "".join(f"<div><span style='display:inline-block;width:12px;height:12px;margin-right:6px;"
+                              f"background:rgb{category_color(n)}'></span>{n}</div>" for n in legend.values())
+                cc2.markdown(leg, unsafe_allow_html=True)
+                cc2.dataframe(stats_c.rename(columns={"categoria": "Categoría", "pixeles": "Píxeles",
+                              "area_m2": "Área (m²)", "porcentaje": "%"}), hide_index=True, width="stretch")
+                cc2.caption(f"Área de la zona: {zone_area:,.0f} m² · píxel medio {px_area:.3f} m² ({crs_m}).")
+                colors = {k: category_color(v) for k, v in legend.items()}
+                d1, d2 = st.columns(2)
+                d1.download_button(on_click="ignore", label="🗺️ Coberturas GeoTIFF (con paleta)", width="stretch",
+                                   data=lambda r_=raster, l_=legend, c_=colors: export_coverage_geotiff(r_, l_, c_, T),
+                                   file_name="coberturas.tif", mime="image/tiff")
+                d2.download_button(on_click="ignore", label="📋 Estadísticas de coberturas (CSV)", width="stretch",
+                                   data=stats_c.to_csv(index=False).encode("utf-8"), file_name="coberturas.csv",
+                                   mime="text/csv")
+
+        elif prod == "coord":
+            st.markdown("**Cuadro de coordenadas y linderos** del contorno de un objeto en coordenadas planas "
+                        "(EPSG:9377 en Colombia), numerado en sentido horario desde el vértice más al norte.")
+            st.caption("Los vértices son bordes vistos en la ortofoto (p. ej. aleros de cubierta), no linderos legales: "
+                       "insumo preliminar que no sustituye un levantamiento topográfico.")
+            ids_c = catalog.ids()
+            if not ids_c:
+                st.caption("No hay objetos.")
+            else:
+                fid = st.session_state.focus_object_id if st.session_state.focus_object_id in ids_c else ids_c[0]
+                oid = st.selectbox("Objeto", ids_c, index=ids_c.index(fid), key="coord_obj",
+                                   format_func=lambda i: f"{i} · {catalog.get(i).label}")
+                tol = st.slider("Generalización del contorno (m)", 0.1, 3.0, 0.5, 0.1,
+                                help="Tolerancia Douglas-Peucker: menos vértices con valores mayores.")
+                o = catalog.get(oid)
+                vt = vertex_table(o.gdf.geometry.iloc[0], tolerance_m=tol)
+                vt_show = vt.assign(acimut_dms=vt["acimut_deg"].map(azimuth_to_dms))
+                q1, q2, q3 = st.columns(3)
+                q1.metric("Vértices", len(vt))
+                q2.metric("Área (polígono generalizado)", f"{vt.attrs['area_m2']:,.2f} m²")
+                q3.metric("Perímetro", f"{vt.attrs['perimetro_m']:,.2f} m")
+                st.dataframe(vt_show.rename(columns={"vertice": "Vértice", "este_x": "Este X (m)", "norte_y": "Norte Y (m)",
+                             "lindero": "Lindero", "distancia_m": "Distancia (m)", "acimut_deg": "Acimut (°)",
+                             "acimut_dms": "Acimut (° ' \")"}), hide_index=True, width="stretch")
+                st.caption(f"CRS: {vt.attrs['crs']} · tolerancia {tol} m.")
+                e1, e2 = st.columns(2)
+                e1.download_button(on_click="ignore", label="📋 Cuadro de coordenadas (CSV)", width="stretch",
+                                   data=vt_show.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"coordenadas_{oid}.csv", mime="text/csv")
+                e2.download_button(on_click="ignore", label="📐 Objeto en DXF", width="stretch",
+                                   data=lambda g=o.gdf.assign(label=o.label): export_dxf(g),
+                                   file_name=f"{oid}_9377.dxf", mime="application/dxf")
+
+        else:  # indicadores
+            st.markdown("**Indicadores urbanos** de la zona y, si carga una capa de predios o manzanas, por unidad.")
+            incl = st.multiselect("Estados incluidos", list(STATUSES), default=["aceptado"],
+                                  format_func=lambda s_: STATUS_LABELS[s_], key="ind_status")
+            gi = catalog.to_geodataframe(incl)
+            _px, zone_area, crs_m = mosaic_pixel_area_m2(T, mosaic["width"], mosaic["height"])
+            ind = zone_indicators(gi, zone_area)
+            if ind.get("n_objetos", 0) == 0:
+                st.caption("No hay objetos en los estados elegidos.")
+            else:
+                i1, i2, i3, i4 = st.columns(4)
+                i1.metric("Índice de ocupación", f"{ind['indice_ocupacion']:.3f}",
+                          help="Área construida en planta / área de la zona (sin alturas: no es índice de construcción).")
+                i2.metric("Edificaciones", ind["n_edificaciones"], help=f"{ind['densidad_edificaciones_ha']:.2f} por hectárea")
+                i3.metric("Área construida", f"{ind['area_construida_m2']:,.0f} m²")
+                i4.metric("Cobertura verde", f"{ind['cobertura_verde_pct']:.1f} %")
+                st.caption(f"Zona analizada: {zone_area:,.0f} m² ({crs_m}). Edificación = categorías «Edificación…», "
+                           "«Edificio en altura» y «Cubierta*»; verde = «Zona verde» y «Arbolado».")
+                built_objs = [o for o in catalog.filter(incl) if is_built(o.label)]
+                if built_objs:
+                    tip = pd.Series([color_stats(img, o.mask())["color_dominante"] for o in built_objs]).value_counts()
+                    st.markdown("**Tipología de cubiertas por color dominante** (insumo para caracterización constructiva)")
+                    st.dataframe(tip.rename_axis("Color").reset_index(name="Edificaciones"), hide_index=True,
+                                 width="stretch")
+
+            st.markdown("**Análisis por predio o manzana**")
+            up = st.file_uploader("Capa de unidades (GeoJSON, GeoPackage o Shapefile en .zip)",
+                                  type=["geojson", "json", "gpkg", "zip"], key="units_upload")
+            if up is not None and not gi.empty:
+                import tempfile as _tf, os as _os
+                try:
+                    with _tf.TemporaryDirectory() as td:
+                        path = _os.path.join(td, up.name)
+                        open(path, "wb").write(up.getbuffer())
+                        units = gpd.read_file(f"zip://{path}" if up.name.endswith(".zip") else path)
+                    fields = [c for c in units.columns if c != "geometry"]
+                    if not fields:
+                        units["unidad"] = [f"U{i + 1}" for i in range(len(units))]
+                        fields = ["unidad"]
+                    idf = st.selectbox("Campo identificador", fields)
+                    res = units_indicators(gi, units, idf)
+                    st.dataframe(res.drop(columns="geometry"), hide_index=True, width="stretch")
+                    st.download_button(on_click="ignore", label="📦 Indicadores por unidad (GeoPackage)",
+                                       data=lambda r_=res: export_geopackage({"indicadores_unidad": r_}),
+                                       file_name="indicadores_por_unidad.gpkg", mime="application/geopackage+sqlite3")
+                except Exception as exc:
+                    st.error(f"No se pudo procesar la capa: {exc}")
+
+            if ind.get("n_objetos", 0):
+                cov_df = None
+                objs_c = [o for o in catalog.filter(incl) if o.label not in UNLABELED]
+                if objs_c:
+                    rr, lg = coverage_raster([(o.mask(), o.label) for o in objs_c], img.shape[:2])
+                    cov_df = coverage_stats(rr, lg, _px)
+                meta = {
+                    "Fecha (UTC)": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M"),
+                    "Fuente de imagen": f"Esri World Imagery, zoom {mosaic.get('zoom')}",
+                    "Extensión (O, S, E, N)": ", ".join(f"{v:.6f}" for v in mosaic["bounds_4326"]),
+                    "Tamaño del mosaico": f"{mosaic['width']} × {mosaic['height']} px",
+                    "CRS métrico": crs_m, "Modelo de segmentación": engine.model_key if engine else "—",
+                    "Estados incluidos": ", ".join(incl),
+                }
+                tbl = gi.drop(columns="geometry")[[c for c in ["object_id", "label", "status", "area_m2",
+                                                               "perimeter_ext_m", "pred_iou", "label_source"]
+                                                   if c in gi.columns]]
+                st.download_button(
+                    on_click="ignore", label="📄 Informe técnico (HTML, imprimible a PDF)", type="primary",
+                    data=lambda m_=meta, i_=ind, c_=cov_df, t_=tbl, v_=st.session_state.sup_cv:
+                        technical_report_html(m_, i_, c_, t_, v_).encode("utf-8"),
+                    file_name="informe_tecnico_zona.html", mime="text/html")
+
     # ---- 10. Exportación --------------------------------------------------------
     with tab_exp:
         scope = st.multiselect("Estados a exportar", list(STATUSES), default=["aceptado"],
@@ -775,6 +1021,15 @@ if mosaic_loaded:
         with v4:
             st.download_button(on_click="ignore", label="📋 CSV de atributos", data=lambda g=gexp: export_csv(g), file_name="objetos_sam2.csv",
                                mime="text/csv", width="stretch", disabled=gexp.empty)
+        k1, k2, _k3, _k4 = st.columns(4)
+        with k1:
+            st.download_button(on_click="ignore", label="📐 DXF (CAD, EPSG:9377)", data=lambda g=gexp: export_dxf(g),
+                               file_name="objetos_sam2_9377.dxf", mime="application/dxf", width="stretch",
+                               disabled=gexp.empty, help="Una capa CAD por categoría, coordenadas Origen Nacional.")
+        with k2:
+            st.download_button(on_click="ignore", label="🌍 KML (Google Earth)", data=lambda g=gexp: export_kml(g),
+                               file_name="objetos_sam2.kml", mime="application/vnd.google-earth.kml+xml",
+                               width="stretch", disabled=gexp.empty)
         st.markdown("**Ráster y datasets**")
         r1, r2, r3, r4 = st.columns(4)
         with r1:
