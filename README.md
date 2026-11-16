@@ -11,8 +11,8 @@ La aplicación (Python + Streamlit) descarga una ortofoto georreferenciada (Esri
 | Verificación | Resultado |
 |---|---|
 | `python test_pipeline.py` | 4/4 ✅ |
-| `pytest` (unitarias + integración con **SAM 2 real**) | 40 ✅ (1 módulo E2E omitido sin `RUN_E2E=1`) |
-| `RUN_E2E=1 pytest tests/e2e` (navegador real, teselas reales, SAM 2.1 real) | 3/3 ✅ |
+| `pytest` (unitarias + integración con **SAM 2 y RemoteCLIP reales**) | 57 ✅ (1 módulo E2E omitido sin `RUN_E2E=1`) |
+| `RUN_E2E=1 pytest tests/e2e` (navegador real, teselas reales, SAM 2.1 real) | 5/5 ✅ |
 | Rendimiento medido (CPU, 2 vCPU, SAM 2.1 Tiny, mosaico 768×768) | carga 0,6 s · embedding ≈1,9 s · decodificador ≈0,1–0,2 s por prompt |
 | Memoria del servidor | ≈0,8 GB con el modelo cargado · pico ≈1,13 GB al calcular el embedding · ≈0,9 GB en reposo |
 
@@ -34,6 +34,18 @@ Detalle de lo terminado y lo pendiente: [`docs/ESTADO.md`](docs/ESTADO.md) · Hi
 8. **Métricas**: área planar y geodésica, perímetro, convex hull, solidez, compacidad, rectangularidad, elongación, orientación, centroide y bbox.
 9. **Administración**: tabla editable (visibilidad, etiqueta, estado aceptado/propuesto/rechazado), centrar, refinar (crea una nueva versión), eliminar, estadísticas y relaciones espaciales.
 10. **Exportación**: GeoJSON, GeoPackage multicapa, Shapefile, CSV, GeoTIFF (ortofoto y máscaras) y dataset COCO.
+
+### Productos (pestaña 🧩 Productos)
+
+| Producto | Qué entrega | Límite honesto |
+|---|---|---|
+| Clasificación supervisada (GEOBIA) | Modelo entrenado con sus objetos confirmados; validación (exactitud, kappa, matriz de confusión); clasificación de objetos propuestos | Solo asigna clases que aprendió; necesita 10 o más muestras por clase para ser fiable (≈83 % medido con 71 objetos) |
+| Mapa de coberturas | GeoTIFF con paleta + estadísticas m²/% | Cubre solo lo segmentado; el resto queda "Sin clasificar" |
+| Cuadro de coordenadas y linderos | Vértices E/N en EPSG:9377, distancias, acimutes; CSV y DXF | Bordes vistos en la ortofoto (aleros), no linderos legales |
+| Indicadores urbanos | Índice de ocupación, densidad, área construida, cobertura verde, tipología de cubiertas; por predio o manzana con capa cargada | Sin alturas: no hay pisos ni índice de construcción |
+| Informe técnico | HTML imprimible a PDF con metadatos, indicadores, coberturas y validación | Insumo preliminar |
+
+Además, la pestaña Exportar ofrece **DXF** (CAD, Origen Nacional) y **KML** (Google Earth).
 
 ### Qué viene de SAM 2 y qué aporta esta aplicación
 
@@ -59,6 +71,7 @@ src/
 ├── interactive.py         Sesión de prompts de un objeto (puntos, caja, logits, deshacer)
 ├── postprocess.py         Forma de la huella: patios, unión de partes, parte principal, borde
 ├── semantic.py            Sugerencia de categoría zero-shot (RemoteCLIP), separada de SAM 2
+├── products.py            Clasificación supervisada, coberturas, coordenadas, indicadores, informe
 ├── objects.py             Catálogo de objetos (RLE, estados, versiones, visibilidad)
 ├── segmentation.py        Clic ↔ píxel, recortes y superposiciones
 ├── geospatial.py          Vectorización, CRS métrico, métricas de forma, relaciones espaciales

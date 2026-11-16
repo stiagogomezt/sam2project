@@ -1,6 +1,34 @@
 # Registro de cambios
 
-## [2.1.0] — 2026-11-15 · Edificaciones compuestas, RemoteCLIP, rediseño GIS y carga de modelos
+## [2.2.0] — 2026-11-15 · Productos para Catastro y Geodesia
+
+### Añadido (`src/products.py`, pestaña Productos)
+- **Clasificación supervisada orientada a objetos (GEOBIA):** regresión logística multinomial con L2
+  (PyTorch, sin dependencias nuevas). Usa descriptores de forma y color, más RemoteCLIP de forma
+  opcional, y se valida con validación cruzada estratificada o dejando uno fuera, con exactitud,
+  kappa, precisión/exhaustividad/F1 por clase y matriz de confusión. Clasifica objetos propuestos o
+  sin categoría con un umbral de probabilidad; los resultados quedan como "sin confirmar".
+  Exporta las muestras de entrenamiento a CSV.
+- **Mapa de coberturas:** ráster clasificado con paleta (GeoTIFF), estadísticas por categoría (m², %)
+  y vista sobre la ortofoto.
+- **Cuadro de coordenadas y linderos:** vértices E/N en EPSG:9377, numerados en sentido horario
+  desde el vértice más al norte, con distancias y acimutes (decimal y DMS) y generalización
+  configurable. Descarga en CSV y DXF.
+- **Indicadores urbanos:** índice de ocupación, densidad de edificaciones, área construida en
+  planta, cobertura verde y tipología de cubiertas por color dominante. Análisis por predio o
+  manzana a partir de una capa cargada (GeoJSON, GPKG o SHP .zip), con exportación a GPKG.
+- **Informe técnico** en HTML imprimible a PDF: metadatos, indicadores, coberturas, validación e inventario.
+- Exportación de **DXF** (CAD, EPSG:9377, una capa por categoría, nombres ASCII) y **KML** (Google Earth).
+- Color dominante en el detalle de cada objeto.
+- Editar la categoría en la tabla la marca como "usuario"; aceptar un objeto con categoría sugerida la confirma.
+- Pruebas: `tests/unit/test_products.py` (8) y la E2E `test_products_tab`.
+
+### Evidencia (imagen real, Bogotá, Esri z19)
+- 71 segmentos automáticos de SAM 2 etiquetados a ojo en 6 clases. Validación dejando uno fuera:
+  exactitud ≈83 %, kappa ≈0,77 con forma + color. Añadir RemoteCLIP no mejoró (82 %).
+  Clases con 11–25 muestras: F1 0,87–0,96; clases con 4–5 muestras: F1 0,25–0,44.
+
+## [2.1.0] — 2026-11-15 · Edificaciones compuestas, perímetro exterior, categorías, rediseño GIS y carga de modelos
 
 Motivo: al segmentar un convento con un clic, SAM 2 tomaba solo una parte (nave o claustro) y el
 perímetro incluía los bordes de los patios. Además, la interfaz requería jerarquía profesional SIG

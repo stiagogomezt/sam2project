@@ -60,6 +60,8 @@ EXPORT_DESCRIPTIONS = {
     "gpkg": "Base espacial OGC multicapa con sistema métrico proyectado.",
     "shp": "Archivo ESRI comprimido con campos compatibles (máx. 10 car.).",
     "csv": "Tabla tabular de áreas, perímetros, centroides y estados.",
+    "dxf": "Capas CAD por categoría en sistema Origen Nacional (EPSG:9377).",
+    "kml": "Visualización directa de polígonos y etiquetas en Google Earth.",
     "ortho": "Mosaico satelital georreferenciado de 3 bandas RGB.",
     "masks": "Ráster de etiquetas enteras por ID de objeto validado.",
     "coco": "Dataset listo para entrenamiento de visión por computador.",

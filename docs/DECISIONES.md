@@ -89,3 +89,16 @@
   principal) aplicado a la máscara antes de vectorizar. Se reportan el perímetro exterior y el total.
 - **Evidencia:** convento completo con SAM 2.1 Large, caja + 5 puntos + patios rellenados → una sola
   parte, IoU predicho 0,936, ≈15 300 m², perímetro exterior ≈700 m (en la app, E2E).
+
+## DEC-0011: Clasificador supervisado ligero (GEOBIA) sin dependencias nuevas
+- **Fecha:** 2026-11-15
+- **Estado:** Aceptado
+- **Decisión:** Regresión logística multinomial con L2 y clases balanceadas, entrenada con L-BFGS
+  en PyTorch (ya instalado; se evita scikit-learn). Descriptores: 6 de forma (log área, compacidad,
+  solidez, rectangularidad, elongación, log P/√A) y 10 de color (medias y desviaciones RGB, tono
+  ponderado por saturación, saturación, brillo). RemoteCLIP (512) es opcional.
+- **Motivo:** con decenas de muestras un modelo lineal regularizado generaliza mejor que modelos
+  más complejos. Medido en 71 objetos reales: forma + color 83 % (kappa 0,77) frente a +RemoteCLIP
+  82 %; RemoteCLIP solo, 79 %.
+- **Reglas:** solo cuentan como muestras los objetos aceptados con categoría confirmada. Mínimo
+  2 clases con 3 o más muestras (recomendado 10 o más). Las predicciones quedan "sin confirmar".
