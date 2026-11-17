@@ -63,7 +63,8 @@ def grid_3857(bbox_4326: Tuple[float, float, float, float], res: float = 10.0):
     side_m = max(width, height) * res
     if side_m > MAX_SIDE_M:
         raise ValueError(f"La zona mide ~{side_m / 1000:.1f} km de lado; el máximo para Sentinel-2 es {MAX_SIDE_M / 1000:.0f} km.")
-    return from_origin(x0, y1, px, px), width, height, (x0, y0, x0 + width * px, y1 - height * px)
+    # bounds = (oeste, sur, este, norte): la grilla nace en la esquina noroeste (x0, y1) y crece hacia el sureste.
+    return from_origin(x0, y1, px, px), width, height, (x0, y1 - height * px, x0 + width * px, y1)
 
 
 def stretch_rgb(red: np.ndarray, green: np.ndarray, blue: np.ndarray) -> np.ndarray:

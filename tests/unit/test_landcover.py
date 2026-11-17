@@ -84,3 +84,18 @@ def test_spectral_map_background_goes_pixelwise():
     assert labels[0][0] == "Fondo"
     names = {leg[c] for c in np.unique(r) if c}
     assert "Agua" in names and "Bosque y arbolado" in names
+
+
+def test_grid_bounds_are_west_south_east_north():
+    from src.sentinel_loader import grid_3857
+    from pyproj import Transformer
+    bbox = (-73.86, 7.05, -73.84, 7.07)
+    T, w, h, (x0, y0, x1, y1) = grid_3857(bbox)
+    assert x1 > x0 and y1 > y0
+    tr = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    lon0, lat0 = tr.transform(x0, y0)
+    lon1, lat1 = tr.transform(x1, y1)
+    assert abs(lon0 - bbox[0]) < 1e-3 and abs(lat0 - bbox[1]) < 2e-3
+    assert abs(lon1 - bbox[2]) < 2e-3 and abs(lat1 - bbox[3]) < 1e-3
+    # la esquina noroeste de la grilla coincide con el origen del transform
+    assert abs(T.c - x0) < 1e-6 and abs(T.f - y1) < 1e-6
