@@ -44,6 +44,9 @@ def search_scenes(bbox_4326: Tuple[float, float, float, float], start: str, end:
     return sorted(feats, key=lambda f: f["properties"].get("eo:cloud_cover", 100))
 
 
+BUILD = "2026-11-17"  # sube con cada corrección; app.py recarga el módulo si el servidor tiene uno viejo
+
+
 def grid_3857(bbox_4326: Tuple[float, float, float, float], res: float = 10.0):
     """Grilla EPSG:3857 que cubre la caja: (transform, ancho, alto, bounds_3857).
 

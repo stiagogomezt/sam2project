@@ -32,7 +32,14 @@ from config import (
 from src.tile_manager import get_tiles_info, TileManagerError
 from src.url_params import parse_view_params
 from src.examples import EXAMPLES
-from src.sentinel_loader import best_scene, grid_3857
+import importlib
+import src.sentinel_loader as _s2_mod
+# Streamlit Cloud puede conservar en memoria la versión anterior de este módulo tras un despliegue:
+# si no es la esperada, se recarga para no arrastrar errores ya corregidos.
+APP_BUILD = "2026-11-17"
+if getattr(_s2_mod, "BUILD", "") != APP_BUILD:
+    _s2_mod = importlib.reload(_s2_mod)
+best_scene, grid_3857 = _s2_mod.best_scene, _s2_mod.grid_3857
 from src import landcover
 from src.imagery_loader import download_tiles_with_report
 from src.mosaic_builder import build_mosaic
@@ -347,7 +354,8 @@ with st.sidebar:
 
     if engine_error:
         st.error(f"Error en motor activo: {engine_error}")
-    st.caption(f"Caché de modelos en RAM: máx. {max_models_in_ram()} (`GEOSAM_MAX_MODELS`).")
+    st.caption(f"Caché de modelos en RAM: máx. {max_models_in_ram()} (`GEOSAM_MAX_MODELS`). "
+               f"Versión de la app: {APP_BUILD}.")
 
     st.markdown("---")
 
