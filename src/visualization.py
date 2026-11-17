@@ -113,6 +113,7 @@ def create_base_map(
     zoom_start: int,
     bounds_4326: Optional[Tuple[float, float, float, float]] = None,
     native_zoom: Optional[int] = None,
+    overlay: Optional[Tuple[Any, Tuple[float, float, float, float], str]] = None,
 ) -> folium.Map:
     """Mapa base estable.
 
@@ -129,6 +130,13 @@ def create_base_map(
                      name="Esri World Imagery", **tile_kwargs).add_to(m)
     folium.plugins.MousePosition(position="bottomright", separator=" | Lon: ",
                                  empty_string="", lng_first=False, num_digits=6, prefix="Lat: ").add_to(m)
+    if overlay is not None:
+        # Imagen procesada (p. ej. Sentinel-2 en grilla EPSG:3857): se dibuja encima del mapa base para
+        # que lo que el usuario ve y donde hace clic coincida con lo que segmenta SAM 2.
+        arr, (west, south, east, north), attribution = overlay
+        folium.raster_layers.ImageOverlay(image=arr, bounds=[[south, west], [north, east]], opacity=1.0,
+                                          interactive=False, cross_origin=False, zindex=1,
+                                          name="Imagen procesada", attr=attribution).add_to(m)
     if bounds_4326 is not None:
         west, south, east, north = bounds_4326
         folium.Rectangle(bounds=[[south, west], [north, east]], color="#FF3333", weight=2,

@@ -490,8 +490,8 @@ def render_topbar(
         <header class="gis-topbar">
             <div class="gis-brand">
                 <h1 class="gis-title">SAM 2 GeoExtractor</h1>
-                <span class="gis-version">v2</span>
-                <span class="gis-subtitle">Segmentación geoespacial interactiva</span>
+                <span class="gis-version">v3</span>
+                <span class="gis-subtitle">Aplicación geoespacial sobre el modelo SAM 2 (Meta AI)</span>
             </div>
             <div class="gis-status-group">
                 <span class="{pill_cls}">

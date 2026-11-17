@@ -15,6 +15,8 @@ shapely>=2.0
 pyproj>=3.6
 pandas
 numpy
+# Filtros de mayoría y textura en la clasificación de coberturas
+scipy>=1.11
 pillow
 mercantile
 requests

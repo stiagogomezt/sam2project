@@ -63,7 +63,10 @@ def object_crop(img: np.ndarray, bbox_px: Sequence[int], pad_ratio: float = 0.1,
 class SemanticClassifier:
     """RemoteCLIP zero-shot. Carga perezosa; seguro para compartir entre sesiones (solo lectura)."""
 
-    def __init__(self, checkpoint: Optional[str] = None, categories: Optional[Dict[str, List[str]]] = None):
+    def __init__(self, checkpoint: Optional[str] = None, categories: Optional[Dict[str, List[str]]] = None,
+                 vocabularies: Optional[Dict[str, Dict[str, List[str]]]] = None):
+        """`categories` es el vocabulario por defecto; `vocabularies` añade otros con nombre (p. ej.
+        «global» para coberturas). Todos se codifican al crear el objeto, antes de liberar la torre de texto."""
         import torch
         import open_clip
 
@@ -82,15 +85,18 @@ class SemanticClassifier:
         self.model = model
         self.preprocess = preprocess
         tokenizer = open_clip.get_tokenizer(REMOTECLIP_INFO["arch"])
-        self._owners: List[str] = []
-        texts: List[str] = []
-        for cat, prompts in self.categories.items():
-            for p in prompts:
-                texts.append(f"a satellite photo of {p}.")
-                self._owners.append(cat)
-        with torch.no_grad():
-            te = model.encode_text(tokenizer(texts))
-            self._text = te / te.norm(dim=-1, keepdim=True)
+        self._vocab: Dict[str, Tuple[List[str], "torch.Tensor"]] = {}
+        for vname, cats in [("default", self.categories)] + list((vocabularies or {}).items()):
+            owners: List[str] = []
+            texts: List[str] = []
+            for cat, prompts in cats.items():
+                for p in prompts:
+                    texts.append(f"a satellite photo of {p}.")
+                    owners.append(cat)
+            with torch.no_grad():
+                te = model.encode_text(tokenizer(texts))
+            self._vocab[vname] = (owners, te / te.norm(dim=-1, keepdim=True))
+        self._owners, self._text = self._vocab["default"]
         # Las descripciones ya están codificadas: la torre de texto (~40 % de los pesos) no se vuelve
         # a usar y se libera.
         for attr in ("transformer", "token_embedding", "ln_final"):
@@ -112,12 +118,13 @@ class SemanticClassifier:
             ie = ie / ie.norm(dim=-1, keepdim=True)
         return ie[0].numpy().astype(np.float32)
 
-    def classify(self, crop_rgb: np.ndarray, top_k: int = 3) -> List[Tuple[str, float]]:
+    def classify(self, crop_rgb: np.ndarray, top_k: int = 3, vocab: str = "default") -> List[Tuple[str, float]]:
+        owners, text = self._vocab[vocab]
         ie = self._torch.from_numpy(self.embed(crop_rgb))[None]
         with self._torch.no_grad():
-            p = (100.0 * ie @ self._text.T).softmax(dim=-1)[0].numpy()
+            p = (100.0 * ie @ text.T).softmax(dim=-1)[0].numpy()
         scores: Dict[str, float] = {}
-        for owner, prob in zip(self._owners, p):
+        for owner, prob in zip(owners, p):
             scores[owner] = scores.get(owner, 0.0) + float(prob)
         ranked = sorted(scores.items(), key=lambda kv: -kv[1])
         return ranked[:top_k]

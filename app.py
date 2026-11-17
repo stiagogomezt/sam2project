@@ -10,6 +10,7 @@ orquesta el estado de sesión y los widgets.
 """
 from __future__ import annotations
 
+import datetime
 import time
 
 import numpy as np
@@ -29,6 +30,10 @@ from config import (
     CRS_WEB_MERCATOR,
 )
 from src.tile_manager import get_tiles_info, TileManagerError
+from src.url_params import parse_view_params
+from src.examples import EXAMPLES
+from src.sentinel_loader import best_scene, grid_3857
+from src import landcover
 from src.imagery_loader import download_tiles_with_report
 from src.mosaic_builder import build_mosaic
 from src.sam_engine import (
@@ -106,6 +111,33 @@ STATUS_LABELS = {"aceptado": "aceptado", "propuesto": "propuesto", "rechazado": 
 # =============================================================================
 # ESTADO DE SESIÓN
 # =============================================================================
+# Zona inicial: la del enlace (?bbox=oeste,sur,este,norte&z=19) si es válida; si no, la predeterminada.
+if "url_view" not in st.session_state:
+    st.session_state["url_view"] = parse_view_params(st.query_params)
+VIEW_BBOX, VIEW_ZOOM, VIEW_FROM_URL = st.session_state["url_view"]
+st.session_state.setdefault("img_source", "Ortoimagen")
+st.session_state.setdefault("s2_dates", (datetime.date.today() - datetime.timedelta(days=365), datetime.date.today()))
+
+
+class _SkipTiles(Exception):
+    """Sentinel-2 no usa teselas: salta la estimación de teselas."""
+
+
+def _apply_example():
+    """Carga una zona de ejemplo: caja, zoom, fuente y periodo."""
+    name = st.session_state.get("example_pick")
+    ex = EXAMPLES.get(name)
+    if not ex:
+        return
+    w, s_, e, n = ex["bbox"]
+    st.session_state["url_view"] = ({"min_lon": w, "min_lat": s_, "max_lon": e, "max_lat": n},
+                                    int(ex.get("zoom", 14)), True)
+    st.session_state["img_source"] = ex["source"]
+    if ex["source"] == "Sentinel-2":
+        st.session_state["s2_dates"] = (datetime.date.fromisoformat(ex["start"]), datetime.date.fromisoformat(ex["end"]))
+    st.session_state["map_center"] = [(s_ + n) / 2, (w + e) / 2]
+    st.session_state["map_zoom"] = int(ex.get("zoom", 13)) if ex["source"] == "Ortoimagen" else 13
+
 _DEFAULTS = {
     "mosaic_data": None,        # img_array, transforms, bounds (sin PIL duplicado)
     "emb": None,                # ImageEmbedding de ESTA sesión (no se comparte entre usuarios)
@@ -115,8 +147,8 @@ _DEFAULTS = {
     "editing_object_id": None,  # objeto del catálogo que se está refinando
     "last_seen_click": None,    # último clic recibido del mapa (evita re-disparos)
     "map_center": [
-        (DEFAULT_BBOX["min_lat"] + DEFAULT_BBOX["max_lat"]) / 2,
-        (DEFAULT_BBOX["min_lon"] + DEFAULT_BBOX["max_lon"]) / 2,
+        (VIEW_BBOX["min_lat"] + VIEW_BBOX["max_lat"]) / 2,
+        (VIEW_BBOX["min_lon"] + VIEW_BBOX["max_lon"]) / 2,
     ],
     "map_zoom": DEFAULT_ZOOM,
     "focus_object_id": None,
@@ -153,7 +185,12 @@ def _reset_editing() -> None:
 @st.cache_resource(show_spinner=False, max_entries=1)
 def get_semantic_classifier() -> SemanticClassifier:
     ensure_checkpoint(REMOTECLIP_INFO)
-    return SemanticClassifier()
+    # Un solo modelo en memoria con dos vocabularios: categorías catastrales y coberturas globales.
+    return SemanticClassifier(vocabularies={"global": landcover.RGB_PROMPTS})
+
+
+def get_landcover_clip() -> SemanticClassifier:
+    return get_semantic_classifier()
 
 
 def shape_options() -> dict:
@@ -309,18 +346,53 @@ with st.sidebar:
     st.markdown("---")
 
     # 2. Zona de estudio -------------------------------------------------------
-    st.markdown("#### :material/map: 2. Zona de estudio (WGS84)")
+    st.markdown("#### :material/map: 2. Imagen y zona de estudio")
+    st.selectbox(
+        "Ejemplos en Colombia",
+        ["— Zona personalizada —"] + list(EXAMPLES),
+        key="example_pick",
+        on_change=_apply_example,
+        help="Carga una zona lista para demostrar: caja, fuente de imagen y periodo.",
+    )
+    if st.session_state.get("example_pick") in EXAMPLES:
+        st.caption(EXAMPLES[st.session_state["example_pick"]]["nota"])
+    img_source = st.segmented_control(
+        "Fuente de imagen",
+        ["Ortoimagen", "Sentinel-2"],
+        key="img_source",
+        help="Ortoimagen Esri (0,3–1 m, RGB) para construcciones y predios; Sentinel-2 L2A (10 m, con "
+        "infrarrojo) para coberturas, agua y deforestación.",
+    ) or "Ortoimagen"
     c1, c2 = st.columns(2)
     with c1:
-        min_lon = st.number_input("Oeste (min lon)", value=DEFAULT_BBOX["min_lon"], format="%.5f", step=0.001)
-        min_lat = st.number_input("Sur (min lat)", value=DEFAULT_BBOX["min_lat"], format="%.5f", step=0.001)
+        min_lon = st.number_input("Oeste (min lon)", value=VIEW_BBOX["min_lon"], format="%.5f", step=0.001)
+        min_lat = st.number_input("Sur (min lat)", value=VIEW_BBOX["min_lat"], format="%.5f", step=0.001)
     with c2:
-        max_lon = st.number_input("Este (max lon)", value=DEFAULT_BBOX["max_lon"], format="%.5f", step=0.001)
-        max_lat = st.number_input("Norte (max lat)", value=DEFAULT_BBOX["max_lat"], format="%.5f", step=0.001)
-    zoom_level = st.slider("Zoom de teselas:", min_value=MIN_ZOOM, max_value=MAX_ZOOM, value=DEFAULT_ZOOM)
+        max_lon = st.number_input("Este (max lon)", value=VIEW_BBOX["max_lon"], format="%.5f", step=0.001)
+        max_lat = st.number_input("Norte (max lat)", value=VIEW_BBOX["max_lat"], format="%.5f", step=0.001)
+    if img_source == "Sentinel-2":
+        s2_dates = st.date_input("Periodo de búsqueda", key="s2_dates", format="DD/MM/YYYY")
+        s2_cloud = st.slider("Nubosidad máxima de la escena (%)", 0, 80, 30, 5)
+        zoom_level = 14
+    else:
+        zoom_level = st.slider("Zoom de teselas:", min_value=MIN_ZOOM, max_value=MAX_ZOOM, value=VIEW_ZOOM)
+    if VIEW_FROM_URL:
+        st.caption("Zona y zoom cargados desde el enlace.")
 
     tiles_estimate = None
+    s2_grid = None
+    if img_source == "Sentinel-2":
+        try:
+            _T, _w, _h, _b = grid_3857((min_lon, min_lat, max_lon, max_lat))
+            s2_grid = (_w, _h)
+            render_tiles_kpis(n_tiles=1, width_px=_w, height_px=_h, sam_px=SAM2_INPUT_SIZE,
+                              gs_m=10.0 * max(1.0, max(_w, _h) / SAM2_INPUT_SIZE))
+            st.caption("Sentinel-2 L2A · Earth Search (AWS) · " + "bandas RGB, NIR y SWIR a 10 m.")
+        except ValueError as exc:
+            st.error(str(exc))
     try:
+        if img_source == "Sentinel-2":
+            raise _SkipTiles()
         tiles_estimate = get_tiles_info(min_lon, min_lat, max_lon, max_lat, zoom=zoom_level)
         h_px, w_px = tiles_estimate["pixel_shape"]
         eff_res = tiles_estimate["res_m_per_px"] * max(1.0, max(h_px, w_px) / SAM2_INPUT_SIZE)
@@ -336,6 +408,8 @@ with st.sidebar:
                 "Área amplia: SAM 2 escala a 1024 px y el cálculo tardará más. "
                 "Reduzca extensión o zoom para objetos pequeños."
             )
+    except _SkipTiles:
+        pass
     except TileManagerError as exc:
         st.error(f"Zona inválida: {exc}")
 
@@ -344,23 +418,53 @@ with st.sidebar:
         confirm_reset = st.checkbox(
             f"Reiniciar el catálogo actual ({len(catalog)} objetos) al cargar otra ortofoto"
         )
-    download_disabled = tiles_estimate is None or engine is None or not confirm_reset
+    has_zone = (s2_grid is not None) if img_source == "Sentinel-2" else (tiles_estimate is not None)
+    download_disabled = not has_zone or engine is None or not confirm_reset
     btn_download = st.button(
-        "Descargar y cargar ortofoto",
+        "Descargar y cargar imagen" if img_source == "Sentinel-2" else "Descargar y cargar ortofoto",
         icon=":material/satellite_alt:",
         type="primary",
         width="stretch",
         disabled=download_disabled,
     )
     if download_disabled:
-        if tiles_estimate is None:
+        if not has_zone:
             st.caption("Corrija la zona de estudio para habilitar la descarga.")
         elif engine is None:
             st.caption("Cargue primero un modelo SAM 2 válido.")
         elif not confirm_reset:
             st.caption("Marque la casilla superior para reemplazar el catálogo actual.")
 
-    if btn_download and tiles_estimate and engine:
+    if btn_download and img_source == "Sentinel-2" and s2_grid and engine:
+        with st.status("Buscando la escena Sentinel-2 con menos nubes...", expanded=True) as dl_status:
+            try:
+                d0, d1 = (list(s2_dates) + [None, None])[:2]
+                if d0 is None or d1 is None:
+                    raise ValueError("Elija una fecha inicial y una final.")
+                t_dl0 = time.perf_counter()
+                mosaic = best_scene((min_lon, min_lat, max_lon, max_lat), d0.isoformat(), d1.isoformat(),
+                                    max_cloud=float(s2_cloud))
+                mosaic["zoom"] = None
+                st.write(f":material/check_circle: Escena {mosaic['scene_id']} ({mosaic['scene_date']}, "
+                         f"nubes en la zona {mosaic['window_cloud'] * 100:.1f} %) leída en "
+                         f"{time.perf_counter() - t_dl0:.1f} s")
+                emb, embed_time = engine.embed(mosaic["img_array"])
+                st.write(f":material/check_circle: Embedding calculado en {embed_time:.2f} s")
+                st.session_state.mosaic_data = mosaic
+                st.session_state.emb = emb
+                st.session_state.tile_failures = []
+                st.session_state.map_center = [(min_lat + max_lat) / 2, (min_lon + max_lon) / 2]
+                st.session_state.map_zoom = 13
+                st.session_state.pop("auto_cover", None)
+                catalog.clear()
+                _reset_editing()
+                dl_status.update(label=f"Sentinel-2 listo ({mosaic['scene_date']})", state="complete", expanded=False)
+                st.rerun()
+            except Exception as exc:
+                dl_status.update(label="Error al cargar Sentinel-2", state="error")
+                st.error(f"Error durante la carga: {exc}")
+
+    if btn_download and img_source != "Sentinel-2" and tiles_estimate and engine:
         with st.status("Descargando ortofoto e indexando con SAM 2...", expanded=True) as dl_status:
             progress = st.progress(0, text="Descargando teselas...")
 
@@ -387,6 +491,7 @@ with st.sidebar:
                 st.session_state.tile_failures = [(t.z, t.x, t.y, e) for t, e in failed]
                 st.session_state.map_center = list(tiles_estimate["centroid"])
                 st.session_state.map_zoom = zoom_level
+                st.session_state.pop("auto_cover", None)
                 catalog.clear()
                 _reset_editing()
                 dl_status.update(label=f"Ortofoto lista (embedding {embed_time:.1f} s)", state="complete", expanded=False)
@@ -596,6 +701,8 @@ with col_map:
         zoom_start=st.session_state.map_zoom,
         bounds_4326=mosaic["bounds_4326"] if mosaic_loaded else None,
         native_zoom=mosaic.get("zoom") if mosaic_loaded else None,
+        overlay=(mosaic["img_array"], mosaic["bounds_4326"], mosaic.get("attribution", ""))
+        if mosaic_loaded and mosaic.get("source") == "sentinel-2" else None,
     )
     layers = []
     if mosaic_loaded:
@@ -934,7 +1041,7 @@ if mosaic_loaded:
                 if st.button("Centrar en el mapa", icon=":material/center_focus_strong:", width="stretch"):
                     r = catalog.get(sel).gdf.iloc[0]
                     st.session_state.map_center = [float(r["centroid_lat"]), float(r["centroid_lon"])]
-                    st.session_state.map_zoom = max(int(mosaic.get("zoom", 18)), 18)
+                    st.session_state.map_zoom = max(int(mosaic.get("zoom") or 15), 15 if mosaic.get("source") == "sentinel-2" else 18)
                     st.rerun()
             with b2:
                 if st.button("Refinar", icon=":material/edit:", width="stretch", disabled=engine is None):
@@ -1342,7 +1449,8 @@ if mosaic_loaded:
                     cov_df = coverage_stats(rr, lg, _px)
                 meta = {
                     "Fecha (UTC)": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M"),
-                    "Fuente de imagen": f"Esri World Imagery, zoom {mosaic.get('zoom')}",
+                    "Fuente de imagen": (f"Sentinel-2 L2A {mosaic.get('scene_id')} ({mosaic.get('scene_date')}), 10 m · {mosaic.get('attribution')}"
+                                         if mosaic.get("source") == "sentinel-2" else f"Esri World Imagery, zoom {mosaic.get('zoom')}"),
                     "Extensión (O, S, E, N)": ", ".join(f"{v:.6f}" for v in mosaic["bounds_4326"]),
                     "Tamaño del mosaico": f"{mosaic['width']} × {mosaic['height']} px",
                     "CRS métrico": crs_m, "Modelo de segmentación": engine.model_key if engine else "—",
@@ -1524,50 +1632,105 @@ if mosaic_loaded:
             )
             st.markdown(f'<p class="gis-export-desc">{EXPORT_DESCRIPTIONS["coco"]}</p>', unsafe_allow_html=True)
 
-    # ---- Segmentación automática ----------------------------------------------
+    # ---- Segmentación automática y mapa de coberturas ---------------------------
     with tab_auto:
-        st.markdown("#### Segmentación automática del mosaico")
+        st.markdown("#### Segmentación automática y mapa de coberturas")
+        is_s2 = mosaic.get("source") == "sentinel-2"
         st.markdown(
-            "Genera máscaras para **todo** el mosaico con `SAM2AutomaticMaskGenerator`. "
-            "Los resultados entran al catálogo como **propuestos** para revisión humana. "
-            "En CPU (2 vCPU), 16×16 puntos tardan ~35–40 s."
+            "SAM 2 genera máscaras para **toda** la imagen sin indicaciones. Luego cada objeto recibe una "
+            "**cobertura global** (leyenda CORINE adaptada para Colombia, nivel 1–2): "
+            + ("con **índices espectrales** de Sentinel-2 (NDVI, MNDWI, NDMI) promediados por objeto; el fondo "
+               "continuo (máscaras de más del 15 % de la escena) y los huecos se clasifican píxel a píxel."
+               if is_s2 else "con **RemoteCLIP** (modelo de lenguaje-imagen para teledetección) y el verdor RGB del objeto.")
+            + " Los objetos entran al catálogo como **propuestos** para revisión."
         )
-        g1, g2, g3, g4 = st.columns(4)
-        pps = g1.selectbox("Puntos por lado", [8, 16, 24, 32], index=1)
-        iou_t = g2.slider("Umbral IoU pred.", 0.5, 0.99, 0.8, 0.01)
-        stab_t = g3.slider("Umbral de estabilidad", 0.5, 0.99, 0.92, 0.01)
-        min_m2 = g4.number_input("Área mínima (m²)", min_value=0.0, value=5.0, step=1.0)
-        if st.button("Ejecutar segmentación automática", icon=":material/auto_awesome:", disabled=engine is None):
-            with st.status(f"Ejecutando segmentación automática ({pps}×{pps} puntos)...", expanded=False) as auto_st:
+        DENSITY = {
+            "Rápida (16 × 16 puntos)": dict(points_per_side=16, crop_n_layers=0),
+            "Normal (32 × 32 puntos)": dict(points_per_side=32, crop_n_layers=0),
+            "Detallada (40 × 40 + recortes)": dict(points_per_side=40, crop_n_layers=1, crop_n_points_downscale_factor=2),
+        }
+        g1, g2, g3 = st.columns([2, 1, 1])
+        dens = g1.selectbox("Densidad", list(DENSITY), index=1,
+                            help="Más puntos y recortes encuentran objetos pequeños, pero tardan más en CPU.")
+        min_m2 = g2.number_input("Área mínima (m²)", min_value=0.0, value=100.0 if is_s2 else 5.0, step=5.0)
+        do_cover = g3.toggle("Clasificar coberturas", value=True)
+        if not is_s2:
+            ok_clip, why_clip = classifier_available()
+            if do_cover and not ok_clip:
+                st.caption(f"RemoteCLIP no disponible ({why_clip}); los objetos quedarán sin cobertura.")
+        if st.button("Segmentar y clasificar toda la imagen", icon=":material/auto_awesome:", type="primary",
+                     disabled=engine is None):
+            with st.status(f"Segmentación automática · {dens}...", expanded=True) as auto_st:
                 masks, secs = engine.segment_everything(
-                    img,
-                    points_per_side=int(pps),
-                    points_per_batch=64,
-                    pred_iou_thresh=float(iou_t),
-                    stability_score_thresh=float(stab_t),
-                )
-                auto_st.update(label=f"Completado en {secs:.1f} s", state="complete")
-            added = 0
-            for cand in sorted(masks, key=lambda c: -c.score)[:300]:
-                g = mask_to_geodataframe(
-                    cand.mask,
-                    T,
-                    confidence=cand.score,
-                    min_pixel_area=min_pixel_area,
-                    simplify_px=simplify_px,
-                )
-                if g.empty or float(g["area_m2"].iloc[0]) < min_m2:
-                    continue
-                catalog.add_from_mask(
-                    cand.mask,
-                    g,
-                    cand.score,
-                    engine.model_key,
-                    type(engine.backend).__name__,
-                    label="sin etiquetar",
-                    origin="automático",
-                    status="propuesto",
-                )
-                added += 1
+                    img, points_per_batch=64, pred_iou_thresh=0.7, stability_score_thresh=0.85,
+                    box_nms_thresh=0.6, min_mask_region_area=40, **DENSITY[dens])
+                st.write(f":material/check_circle: {len(masks)} máscaras en {secs:.0f} s")
+                kept = []
+                for cand in sorted(masks, key=lambda c: -c.score)[:600]:
+                    g = mask_to_geodataframe(cand.mask, T, confidence=cand.score,
+                                             min_pixel_area=min_pixel_area, simplify_px=simplify_px)
+                    if g.empty or float(g["area_m2"].iloc[0]) < min_m2:
+                        continue
+                    kept.append((cand, g))
+                labels = [("sin etiquetar", 0.0)] * len(kept)
+                method = ""
+                t_c = time.perf_counter()
+                if do_cover and kept:
+                    if is_s2:
+                        s2_raster, s2_legend, labels, s2_info = landcover.spectral_map([c.mask for c, _ in kept],
+                                                                                       mosaic["bands"])
+                        method = "índices espectrales"
+                    elif classifier_available()[0]:
+                        clip = get_landcover_clip()
+                        _pa0, _, _ = mosaic_pixel_area_m2(T, mosaic["width"], mosaic["height"])
+                        labels = landcover.classify_rgb(img, [c.mask for c, _ in kept], [c.bbox_px for c, _ in kept],
+                                                        clip, px_m2=_pa0)
+                        labels = [("Fondo", 0.0) if landcover.is_background(c.mask) else lab
+                                  for (c, _), lab in zip(kept, labels)]
+                        method = "RemoteCLIP + verdor"
+                    st.write(f":material/check_circle: Coberturas asignadas en {time.perf_counter() - t_c:.0f} s ({method})")
+                added = 0
+                for (cand, g), (lab, conf) in zip(kept, labels):
+                    if lab == "Fondo":  # el fondo no es un objeto: no entra al catálogo
+                        continue
+                    catalog.add_from_mask(cand.mask, g, cand.score, engine.model_key, type(engine.backend).__name__,
+                                          label=lab, origin="automático", status="propuesto",
+                                          label_source=f"automático · {method}" if method else "usuario")
+                    added += 1
+                if method:
+                    if is_s2:
+                        raster, legend = s2_raster, s2_legend
+                    else:
+                        raster, legend = landcover.paint([c.mask for (c, _), (l, _) in zip(kept, labels) if l != "Fondo"],
+                                                         [l for l, _ in labels if l != "Fondo"], img.shape[:2])
+                    _pa, _tot, _crs = mosaic_pixel_area_m2(T, mosaic["width"], mosaic["height"])
+                    st.session_state["auto_cover"] = {"raster": raster, "legend": legend, "px_m2": _pa,
+                                                      "method": method, "secs": secs, "n": added}
+                auto_st.update(label=f"{added} objetos en {secs:.0f} s", state="complete", expanded=False)
             st.toast(f"{added} objetos propuestos en {secs:.0f} s.", icon=":material/auto_awesome:")
             st.rerun()
+        cover = st.session_state.get("auto_cover")
+        if cover:
+            st.markdown("##### Mapa de coberturas")
+            cc1, cc2 = st.columns([3, 2])
+            with cc1:
+                _rgb = landcover.to_rgb(cover["raster"], cover["legend"]).astype("float32")
+                _base = img.astype("float32") if img.shape[:2] == cover["raster"].shape else _rgb
+                _on = cover["raster"] > 0
+                _blend = _base * 0.45
+                _blend[_on] = _rgb[_on] * 0.8 + _base[_on] * 0.2
+                st.image(_blend.clip(0, 255).astype("uint8"), width="stretch",
+                         caption=f"{cover['n']} objetos · coberturas por {cover['method']} · en gris oscuro, sin clasificar")
+            with cc2:
+                tab_cov = landcover.area_table(cover["raster"], cover["legend"], cover["px_m2"])
+                st.dataframe(tab_cov, hide_index=True, width="stretch")
+                chips = "".join(
+                    f'<span style="display:inline-flex;align-items:center;gap:6px;margin:2px 10px 2px 0">'
+                    f'<span style="width:14px;height:14px;border-radius:3px;background:rgb{landcover.class_color(n)}"></span>{n}</span>'
+                    for n in landcover.GLOBAL_CLASSES)
+                st.markdown(f'<div style="font-size:0.85rem;line-height:1.8">{chips}</div>', unsafe_allow_html=True)
+                st.download_button("Tabla de coberturas (CSV)", tab_cov.to_csv(index=False).encode("utf-8"),
+                                   file_name="coberturas.csv", mime="text/csv", icon=":material/table:",
+                                   on_click="ignore")
+            st.caption("Clasificación automática sugerida: revise y corrija las categorías en el catálogo antes de "
+                       "usar el mapa en un informe.")
