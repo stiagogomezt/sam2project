@@ -114,6 +114,8 @@ def create_base_map(
     bounds_4326: Optional[Tuple[float, float, float, float]] = None,
     native_zoom: Optional[int] = None,
     overlay: Optional[Tuple[Any, Tuple[float, float, float, float], str]] = None,
+    zone_4326: Optional[Tuple[float, float, float, float]] = None,
+    draw_zone: bool = False,
 ) -> folium.Map:
     """Mapa base estable.
 
@@ -137,6 +139,21 @@ def create_base_map(
         folium.raster_layers.ImageOverlay(image=arr, bounds=[[south, west], [north, east]], opacity=1.0,
                                           interactive=False, cross_origin=False, zindex=1,
                                           name="Imagen procesada", attr=attribution).add_to(m)
+    if zone_4326 is not None:
+        # Zona de estudio que se va a descargar (antes de cargar la imagen).
+        west, south, east, north = zone_4326
+        folium.Rectangle(bounds=[[south, west], [north, east]], color="#1565C0", weight=3,
+                         fill=True, fill_opacity=0.08, interactive=False,
+                         tooltip="Zona de estudio a descargar").add_to(m)
+    if draw_zone:
+        # Solo rectángulo: el usuario dibuja la zona de estudio directamente en el mapa.
+        folium.plugins.Draw(
+            export=False, position="topleft",
+            draw_options={"polyline": False, "polygon": False, "circle": False, "marker": False,
+                          "circlemarker": False,
+                          "rectangle": {"shapeOptions": {"color": "#1565C0", "weight": 3}}},
+            edit_options={"edit": False, "remove": False},
+        ).add_to(m)
     if bounds_4326 is not None:
         west, south, east, north = bounds_4326
         folium.Rectangle(bounds=[[south, west], [north, east]], color="#FF3333", weight=2,

@@ -114,6 +114,12 @@ STATUS_LABELS = {"aceptado": "aceptado", "propuesto": "propuesto", "rechazado": 
 # Zona inicial: la del enlace (?bbox=oeste,sur,este,norte&z=19) si es válida; si no, la predeterminada.
 if "url_view" not in st.session_state:
     st.session_state["url_view"] = parse_view_params(st.query_params)
+# Zona dibujada en el mapa en la ejecución anterior: se aplica ANTES de crear los widgets de la barra lateral.
+if st.session_state.get("_pending_zone"):
+    _w, _s, _e, _n = st.session_state.pop("_pending_zone")
+    st.session_state["url_view"] = ({"min_lon": _w, "min_lat": _s, "max_lon": _e, "max_lat": _n},
+                                    st.session_state["url_view"][1], False)
+    st.session_state["example_pick"] = "— Zona personalizada —"
 VIEW_BBOX, VIEW_ZOOM, VIEW_FROM_URL = st.session_state["url_view"]
 st.session_state.setdefault("img_source", "Ortoimagen")
 st.session_state.setdefault("s2_dates", (datetime.date.today() - datetime.timedelta(days=365), datetime.date.today()))
@@ -131,7 +137,7 @@ def _apply_example():
         return
     w, s_, e, n = ex["bbox"]
     st.session_state["url_view"] = ({"min_lon": w, "min_lat": s_, "max_lon": e, "max_lat": n},
-                                    int(ex.get("zoom", 14)), True)
+                                    int(ex.get("zoom", 14)), False)
     st.session_state["img_source"] = ex["source"]
     if ex["source"] == "Sentinel-2":
         st.session_state["s2_dates"] = (datetime.date.fromisoformat(ex["start"]), datetime.date.fromisoformat(ex["end"]))
@@ -378,6 +384,8 @@ with st.sidebar:
         zoom_level = st.slider("Zoom de teselas:", min_value=MIN_ZOOM, max_value=MAX_ZOOM, value=VIEW_ZOOM)
     if VIEW_FROM_URL:
         st.caption("Zona y zoom cargados desde el enlace.")
+    st.caption(":material/crop_square: También puede **dibujar la zona en el mapa** con el botón de rectángulo "
+               "(arriba a la izquierda del mapa). El recuadro azul es lo que se va a descargar.")
 
     tiles_estimate = None
     s2_grid = None
@@ -703,6 +711,8 @@ with col_map:
         native_zoom=mosaic.get("zoom") if mosaic_loaded else None,
         overlay=(mosaic["img_array"], mosaic["bounds_4326"], mosaic.get("attribution", ""))
         if mosaic_loaded and mosaic.get("source") == "sentinel-2" else None,
+        zone_4326=None if mosaic_loaded else (min_lon, min_lat, max_lon, max_lat),
+        draw_zone=not mosaic_loaded,
     )
     layers = []
     if mosaic_loaded:
@@ -725,12 +735,26 @@ with col_map:
         key="visor",
         height=575,
         use_container_width=True,
-        returned_objects=["last_clicked"],
+        returned_objects=["last_clicked"] if mosaic_loaded else ["last_active_drawing"],
         feature_group_to_add=layers or None,
         center=st.session_state.map_center,
         zoom=st.session_state.map_zoom,
     )
     render_map_legend(seg.summary() if mosaic_loaded else {"positivos": 0, "negativos": 0, "caja": 0})
+
+# ---- Zona dibujada en el mapa (antes de cargar la imagen) ---------------------
+if not mosaic_loaded and map_out and map_out.get("last_active_drawing"):
+    try:
+        _ring = map_out["last_active_drawing"]["geometry"]["coordinates"][0]
+        _xs = [float(c[0]) for c in _ring]
+        _ys = [float(c[1]) for c in _ring]
+        _bb = (round(min(_xs), 5), round(min(_ys), 5), round(max(_xs), 5), round(max(_ys), 5))
+    except (KeyError, IndexError, TypeError, ValueError):
+        _bb = None
+    if _bb and _bb[0] < _bb[2] and _bb[1] < _bb[3] and _bb != st.session_state.get("last_drawn_zone"):
+        st.session_state["last_drawn_zone"] = _bb
+        st.session_state["_pending_zone"] = _bb
+        st.rerun()
 
 # ---- Procesamiento del clic (solo clics NUEVOS) -----------------------------
 if mosaic_loaded and engine is not None and map_out and map_out.get("last_clicked"):
