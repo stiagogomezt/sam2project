@@ -99,3 +99,15 @@ def test_grid_bounds_are_west_south_east_north():
     assert abs(lon1 - bbox[2]) < 2e-3 and abs(lat1 - bbox[3]) < 1e-3
     # la esquina noroeste de la grilla coincide con el origen del transform
     assert abs(T.c - x0) < 1e-6 and abs(T.f - y1) < 1e-6
+
+
+def test_placeholder_tile_detection():
+    from PIL import Image
+    from src.imagery_loader import is_placeholder_tile
+    gray = Image.new("RGB", (256, 256), (205, 205, 205))
+    assert is_placeholder_tile(gray)
+    rng = np.random.default_rng(0)
+    photo = Image.fromarray(rng.integers(0, 255, (256, 256, 3), dtype=np.uint8))
+    assert not is_placeholder_tile(photo)
+    green = Image.new("RGB", (256, 256), (60, 90, 50))
+    assert not is_placeholder_tile(green)

@@ -2,6 +2,7 @@
 Módulo para descarga concurrente, resiliente y cacheada de teselas de imágenes aéreas/satelitales.
 """
 import io
+import numpy as np
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
@@ -29,6 +30,28 @@ def _create_session() -> requests.Session:
     return session
 
 NEUTRAL_TILE_COLOR = (40, 40, 40)
+NO_DATA_ERROR = "sin imagen a este zoom"
+
+
+def is_placeholder_tile(img: Image.Image) -> bool:
+    """Esri devuelve un gris liso («Map data not yet available») donde no hay imagen a ese zoom."""
+    arr = np.asarray(img.convert("RGB"), dtype=np.float32)
+    mean = arr.reshape(-1, 3).mean(axis=0)
+    return bool(arr.std() < 10 and abs(mean - 205).max() < 12 and np.ptp(mean) < 3)
+
+
+def probe_max_zoom(lon: float, lat: float, z_max: int = 19, z_min: int = 15,
+                   url_template: str = ESRI_IMAGERY_URL) -> Optional[int]:
+    """Zoom más alto con imagen real en el punto (lon, lat); None si no responde el proveedor."""
+    session = _create_session()
+    answered = False
+    for z in range(z_max, z_min - 1, -1):
+        _t, img, err = _fetch_tile(mercantile.tile(lon, lat, z), session, url_template)
+        if img is not None:
+            return z
+        if err == NO_DATA_ERROR:
+            answered = True
+    return z_min if answered else None
 
 
 def _fetch_tile(tile: mercantile.Tile, session: requests.Session, url_template: str) -> Tuple[mercantile.Tile, Optional[Image.Image], Optional[str]]:
@@ -41,6 +64,8 @@ def _fetch_tile(tile: mercantile.Tile, session: requests.Session, url_template: 
         img = Image.open(io.BytesIO(response.content)).convert("RGB")
         if img.size != (256, 256):
             img = img.resize((256, 256))
+        if is_placeholder_tile(img):
+            return tile, None, NO_DATA_ERROR
         return tile, img, None
     except Exception as exc:  # red, decodificación, timeout
         return tile, None, type(exc).__name__

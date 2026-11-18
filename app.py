@@ -36,12 +36,15 @@ import importlib
 import src.sentinel_loader as _s2_mod
 # Streamlit Cloud puede conservar en memoria la versión anterior de este módulo tras un despliegue:
 # si no es la esperada, se recarga para no arrastrar errores ya corregidos.
-APP_BUILD = "2026-11-17"
+APP_BUILD = "2026-11-18"
 if getattr(_s2_mod, "BUILD", "") != APP_BUILD:
     _s2_mod = importlib.reload(_s2_mod)
 best_scene, grid_3857 = _s2_mod.best_scene, _s2_mod.grid_3857
 from src import landcover
-from src.imagery_loader import download_tiles_with_report
+import src.imagery_loader as _img_mod
+if not hasattr(_img_mod, "probe_max_zoom"):  # el servidor conserva una versión vieja del módulo
+    _img_mod = importlib.reload(_img_mod)
+download_tiles_with_report, probe_max_zoom = _img_mod.download_tiles_with_report, _img_mod.probe_max_zoom
 from src.mosaic_builder import build_mosaic
 from src.sam_engine import (
     get_sam2_engine,
@@ -122,10 +125,53 @@ STATUS_LABELS = {"aceptado": "aceptado", "propuesto": "propuesto", "rechazado": 
 if "url_view" not in st.session_state:
     st.session_state["url_view"] = parse_view_params(st.query_params)
 # Zona dibujada en el mapa en la ejecución anterior: se aplica ANTES de crear los widgets de la barra lateral.
+
+
+def _ortho_zoom_for(bbox) -> int | None:
+    """Zoom de teselas más alto (≤ MAX_ZOOM) que cabe en el límite de descarga para la caja."""
+    w, s_, e, n = bbox
+    for z in range(MAX_ZOOM, MIN_ZOOM - 1, -1):
+        try:
+            get_tiles_info(w, s_, e, n, zoom=z)
+            return z
+        except TileManagerError:
+            continue
+    return None
+
+
+def _best_ortho_zoom(bbox) -> int | None:
+    """Máxima resolución útil: la que permite el límite de teselas y que Esri tiene en el centro de la zona."""
+    z = _ortho_zoom_for(bbox)
+    if z is None:
+        return None
+    w, s_, e, n = bbox
+    try:
+        avail = probe_max_zoom((w + e) / 2, (s_ + n) / 2, z_max=z, z_min=MIN_ZOOM)
+    except Exception:
+        avail = None
+    return min(z, avail) if avail else z
+
+
+def _switch_to_ortho(bbox) -> None:
+    """Botón: pasa la zona actual a ortoimagen con la mayor resolución disponible."""
+    z = _best_ortho_zoom(bbox)
+    if z is None:
+        return
+    st.session_state["img_source"] = "Ortoimagen"
+    w, s_, e, n = bbox
+    st.session_state["url_view"] = ({"min_lon": w, "min_lat": s_, "max_lon": e, "max_lat": n}, z, False)
+
+
 if st.session_state.get("_pending_zone"):
     _w, _s, _e, _n = st.session_state.pop("_pending_zone")
-    st.session_state["url_view"] = ({"min_lon": _w, "min_lat": _s, "max_lon": _e, "max_lat": _n},
-                                    st.session_state["url_view"][1], False)
+    _z = st.session_state["url_view"][1]
+    # Zona dibujada: si cabe en teselas de alta resolución, se usa la ortoimagen al máximo zoom disponible;
+    # Sentinel-2 (10 m) queda para zonas de varios kilómetros.
+    _zbest = _best_ortho_zoom((_w, _s, _e, _n))
+    if _zbest is not None and _zbest >= 17:
+        st.session_state["img_source"] = "Ortoimagen"
+        _z = _zbest
+    st.session_state["url_view"] = ({"min_lon": _w, "min_lat": _s, "max_lon": _e, "max_lat": _n}, _z, False)
     st.session_state["example_pick"] = "— Zona personalizada —"
 VIEW_BBOX, VIEW_ZOOM, VIEW_FROM_URL = st.session_state["url_view"]
 st.session_state.setdefault("img_source", "Ortoimagen")
@@ -404,6 +450,13 @@ with st.sidebar:
             render_tiles_kpis(n_tiles=1, width_px=_w, height_px=_h, sam_px=SAM2_INPUT_SIZE,
                               gs_m=10.0 * max(1.0, max(_w, _h) / SAM2_INPUT_SIZE))
             st.caption("Sentinel-2 L2A · Earth Search (AWS) · " + "bandas RGB, NIR y SWIR a 10 m.")
+            if max(_w, _h) < 400:
+                st.warning(
+                    f"Sentinel-2 tiene píxeles de 10 m: esta zona queda en solo {_w} × {_h} píxeles y se verá "
+                    "borrosa. Para construcciones, vías o lotes use la ortoimagen (0,3–0,6 m)."
+                )
+                st.button("Usar ortoimagen de máxima resolución", icon=":material/hd:", width="stretch",
+                          on_click=_switch_to_ortho, args=((min_lon, min_lat, max_lon, max_lat),))
         except ValueError as exc:
             st.error(str(exc))
     try:
@@ -489,6 +542,15 @@ with st.sidebar:
 
             try:
                 t_dl0 = time.perf_counter()
+                # Esri no tiene imagen a zoom 19 en todas partes (fuera de ciudades suele llegar a 17–18):
+                # se comprueba en el centro y se baja al zoom más alto que sí existe.
+                _avail = probe_max_zoom((min_lon + max_lon) / 2, (min_lat + max_lat) / 2,
+                                        z_max=zoom_level, z_min=MIN_ZOOM)
+                if _avail and _avail < zoom_level:
+                    st.write(f":material/info: Esri no tiene imagen a zoom {zoom_level} en esta zona; "
+                             f"se usa zoom {_avail}, la máxima resolución disponible aquí.")
+                    zoom_level = _avail
+                    tiles_estimate = get_tiles_info(min_lon, min_lat, max_lon, max_lat, zoom=zoom_level)
                 tile_images, failed = download_tiles_with_report(tiles_estimate["tiles"], progress_callback=_progress)
                 if len(failed) == len(tiles_estimate["tiles"]):
                     raise RuntimeError("No se pudo descargar ninguna tesela (revise la conexión o el proveedor).")
