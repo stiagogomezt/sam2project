@@ -74,12 +74,29 @@ class SemanticClassifier:
         ckpt = checkpoint or REMOTECLIP_INFO["checkpoint"]
         # Memoria: los pesos del archivo se mapean (mmap) y se ASIGNAN a los parámetros (assign=True),
         # de modo que los tensores aleatorios iniciales se liberan en lugar de copiar encima de ellos.
-        model, _, preprocess = open_clip.create_model_and_transforms(REMOTECLIP_INFO["arch"])
+        # La arquitectura se crea en el dispositivo «meta» (sin reservar memoria para los pesos aleatorios):
+        # así el pico de RAM es el de los pesos reales y no el doble, lo que evita que Streamlit Cloud
+        # cierre el proceso por falta de memoria.
+        import logging
+        logging.getLogger("open_clip.factory").setLevel(logging.ERROR)  # el aviso «sin pesos» es esperado
+        with torch.device("meta"):
+            model = open_clip.create_model(REMOTECLIP_INFO["arch"], device="meta")
+        preprocess = open_clip.image_transform(model.visual.image_size, is_train=False,
+                                               mean=getattr(model.visual, "image_mean", None),
+                                               std=getattr(model.visual, "image_std", None))
         state = torch.load(ckpt, map_location="cpu", mmap=True, weights_only=True)
         missing = model.load_state_dict(state, assign=True)
         if getattr(missing, "missing_keys", None):
             raise RuntimeError(f"Checkpoint RemoteCLIP incompleto: {missing.missing_keys[:5]}")
         del state
+        # Los búferes no persistentes (máscara causal del texto) no vienen en el archivo: se rehacen en CPU.
+        for mod in model.modules():
+            for name, buf in list(mod.named_buffers(recurse=False)):
+                if buf.is_meta:
+                    if name != "attn_mask":
+                        raise RuntimeError(f"Búfer sin inicializar en RemoteCLIP: {name}")
+                    n = buf.shape[-1]
+                    mod.register_buffer(name, torch.full((n, n), float("-inf")).triu_(1), persistent=False)
         model.eval()
         self._torch = torch
         self.model = model
